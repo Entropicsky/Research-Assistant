@@ -337,7 +337,8 @@
 - [x] Create agentnotes.md
 - [x] Initialize Git repository
 - [x] Create .gitignore file
-- [ ] Make initial commit
+- [x] Make initial commit
+- [x] Create requirements.txt file
 - [ ] Create GitHub repository
 - [ ] Connect local repository to GitHub
 - [ ] Push code to GitHub
