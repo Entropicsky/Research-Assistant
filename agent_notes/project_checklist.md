@@ -339,9 +339,9 @@
 - [x] Create .gitignore file
 - [x] Make initial commit
 - [x] Create requirements.txt file
-- [ ] Create GitHub repository
-- [ ] Connect local repository to GitHub
-- [ ] Push code to GitHub
+- [x] Create GitHub repository
+- [x] Connect local repository to GitHub
+- [x] Push code to GitHub
 
 ## Completed Features
 - [x] Basic Streamlit UI
