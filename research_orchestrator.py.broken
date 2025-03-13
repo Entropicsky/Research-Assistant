@@ -1,0 +1,903 @@
+#!/usr/bin/env python3
+# research_orchestrator.py
+"""
+Research Orchestrator
+
+This script provides advanced research automation with two modes of operation:
+
+1. Topic-Based Research Mode:
+   - Takes a topic, perspective, and depth as inputs
+   - Generates multiple research questions using Perplexity
+   - Processes each question with efficient citation handling
+   - Organizes everything in a topic-based folder structure
+
+2. Direct Question Mode:
+   - Takes one or more specific research questions directly
+   - Processes each question with efficient citation handling
+   - Can also read questions from a file (one per line)
+
+Key Features:
+- Parallel processing with configurable worker threads
+- Rate limit protection with smart retry logic
+- Citation deduplication across questions
+- Comprehensive markdown outputs and indexes
+
+Usage (Topic Mode):
+    python research_orchestrator.py --topic "Kahua, the Construction Software Management Company" --perspective "Chief Product Officer" --depth 5
+
+Usage (Direct Question Mode):
+    python research_orchestrator.py --questions "What is quantum computing?" "How do quantum computers work?"
+    
+Usage (Questions from File):
+    python research_orchestrator.py --questions questions.txt
+
+Run with --help for more options.
+"""
+
+import os
+import re
+import sys
+import time
+import json
+import traceback
+import argparse
+import threading
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dotenv import load_dotenv
+from urllib.parse import urlparse
+
+# Import functionality from perplexityresearch.py
+from perplexityresearch import (
+    query_perplexity, 
+    intelligent_scrape, 
+    clean_thinking_sections, 
+    generate_executive_summary,
+    Colors,
+    PDFReport,
+    create_run_subfolders,
+)
+
+# Import OpenAI and related libraries for file search
+import requests
+from io import BytesIO
+from pathlib import Path
+import uuid
+import glob
+import asyncio
+import signal
+import queue
+from datetime import datetime
+from collections import defaultdict
+from functools import partial
+
+# Load environment variables
+load_dotenv()
+
+# API Keys
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Add OpenAI API key
+
+# Models
+PERPLEXITY_RESEARCH_MODEL = os.getenv("PERPLEXITY_RESEARCH_MODEL", "sonar-medium-online")
+PERPLEXITY_CLEANUP_MODEL = os.getenv("PERPLEXITY_CLEANUP_MODEL", "mixtral-8x7b-instruct")
+
+# API error handling settings
+API_MAX_RETRIES = int(os.getenv("API_MAX_RETRIES", 3))
+API_INITIAL_RETRY_DELAY = float(os.getenv("API_INITIAL_RETRY_DELAY", 2.0))
+API_MAX_RETRY_DELAY = float(os.getenv("API_MAX_RETRY_DELAY", 30.0))
+
+# Rate limiting
+RATE_LIMIT_QUESTIONS_PER_WORKER = int(os.getenv("RATE_LIMIT_QUESTIONS_PER_WORKER", 10))
+THREAD_STAGGER_DELAY = float(os.getenv("THREAD_STAGGER_DELAY", 5.0))
+MAX_CITATIONS = int(os.getenv("MAX_CITATIONS", 50))
+CITATION_TIMEOUT = int(os.getenv("CITATION_TIMEOUT", 300))  # Default: 5 minutes
+
+# Thread safety
+print_lock = threading.Lock()
+
+# Terminal colors
+class Colors:
+    RESET = "\033[0m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    BOLD = "\033[1m"
+
+# Thread-safe print function
+def safe_print(message):
+    """Thread-safe print function."""
+    with print_lock:
+        print(message, flush=True)
+
+def with_retry(func, *args, prefix="", **kwargs):
+    """
+    Wrapper for API calls that implements exponential backoff retry logic.
+    Handles rate limiting errors gracefully.
+    
+    Args:
+        func: The function to call
+        *args: Arguments to pass to the function
+        prefix: Prefix for log messages (e.g., "[Q1]")
+        **kwargs: Keyword arguments to pass to the function
+        
+    Returns:
+        The result of the function call
+    """
+    retry_count = 0
+    delay = API_INITIAL_RETRY_DELAY
+    
+    while True:
+        try:
+            return func(*args, **kwargs)
+        
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Check for rate limiting related errors
+            is_rate_limit = any(phrase in error_msg for phrase in [
+                "rate limit", "too many requests", "429", "throttl", 
+                "quota exceeded", "too frequent", "timeout"
+            ])
+            
+            # If we've reached max retries or it's not a rate limit error, raise the exception
+            if retry_count >= API_MAX_RETRIES or not is_rate_limit:
+                raise
+            
+            # Exponential backoff for retries
+            retry_count += 1
+            safe_print(f"{Colors.YELLOW}{prefix} Rate limit detected. Retrying in {delay:.1f} seconds... (Attempt {retry_count}/{API_MAX_RETRIES}){Colors.RESET}")
+            time.sleep(delay)
+            
+            # Increase delay for next retry (exponential backoff with jitter)
+            delay = min(delay * 2 * (0.5 + random.random()), API_MAX_RETRY_DELAY)
+
+def research_pipeline(question, master_folder, question_number, total_questions):
+    """
+    Phase 1 of the research process: Get initial research response for a question.
+    Modified to stop after getting the research response - does not process citations.
+    
+    Returns a tuple of (success_flag, research_response, citations)
+    """
+    safe_print(f"\n{Colors.BOLD}{Colors.MAGENTA}[{question_number}/{total_questions}] Researching: '{question}'{Colors.RESET}")
+    
+    try:
+        # Set up paths for this question
+        safe_question = re.sub(r'[^\w\s-]', '', question)
+        safe_question = re.sub(r'[-\s]+', '_', safe_question).strip('-_')
+        safe_question = safe_question[:30] if len(safe_question) > 30 else safe_question
+        
+        # Change prefix from Q to A to make files sort to the top
+        question_prefix = f"A{question_number:02d}_"
+        prefix = f"[Q{question_number}]"  # Keep this as Q for log messages for clarity
+        
+        # Timestamp not needed for individual questions as they're in the master folder
+        response_dir = os.path.join(master_folder, "response")
+        markdown_dir = os.path.join(master_folder, "markdown")
+        
+        # STEP 1: Call Perplexity with 'research' model for the initial research
+        safe_print(f"{Colors.CYAN}{prefix} Starting research...{Colors.RESET}")
+        research_response = with_retry(
+            query_perplexity,
+            prompt=question,
+            model=PERPLEXITY_RESEARCH_MODEL,
+            system_prompt="Perform thorough research on the user's query.",
+            is_research=True,
+            prefix=prefix
+        )
+        
+        # Dump the main research response JSON to file
+        research_filename = os.path.join(response_dir, f"{question_prefix}research_response.json")
+        with open(research_filename, "w", encoding="utf-8") as f:
+            json.dump(research_response, f, indent=2)
+        safe_print(f"{Colors.GREEN}{prefix} Saved main Perplexity research response.{Colors.RESET}")
+        
+        # STEP 2: Extract citations from the root level of the response
+        raw_citations = research_response.get("citations", [])
+        
+        # Filter out non-string citations and validate URLs
+        citations = []
+        invalid_citation_count = 0
+        for citation in raw_citations:
+            if not isinstance(citation, str):
+                safe_print(f"{Colors.YELLOW}{prefix} Ignoring invalid citation (not a string): {type(citation).__name__}{Colors.RESET}")
+                invalid_citation_count += 1
+                continue
+                
+            if not citation.startswith(('http://', 'https://')):
+                safe_print(f"{Colors.YELLOW}{prefix} Ignoring invalid URL format: {citation}{Colors.RESET}")
+                invalid_citation_count += 1
+                continue
+                
+            citations.append(citation)
+        
+        if invalid_citation_count > 0:
+            safe_print(f"{Colors.YELLOW}{prefix} Ignored {invalid_citation_count} invalid citations.{Colors.RESET}")
+            
+        safe_print(f"{Colors.BOLD}{Colors.CYAN}{prefix} Found {len(citations)} valid citation(s).{Colors.RESET}")
+
+        # Get the main content and clean it of thinking sections
+        main_content = ""
+        if research_response.get("choices") and len(research_response["choices"]) > 0:
+            raw_content = research_response["choices"][0]["message"].get("content", "")
+            main_content = clean_thinking_sections(raw_content)
+        
+        # Save the cleaned research summary
+        summary_md_path = os.path.join(markdown_dir, f"{question_prefix}research_summary.md")
+        with open(summary_md_path, "w", encoding="utf-8") as f:
+            f.write(f"# Research Summary: {question}\n\n")
+            # Make sure the content is clean of thinking sections again before writing
+            cleaned_content = clean_thinking_sections(main_content)
+            f.write(cleaned_content)
+            f.write("\n\n## Citation Links\n\n")
+            for i, url in enumerate(citations, 1):
+                f.write(f"{i}. [{url}]({url})\n")
+        safe_print(f"{Colors.GREEN}{prefix} Saved research summary.{Colors.RESET}")
+
+        # Generate executive summary
+        safe_print(f"{Colors.CYAN}{prefix} Generating executive summary...{Colors.RESET}")
+        exec_summary = with_retry(
+            generate_executive_summary,
+            question, main_content, PERPLEXITY_CLEANUP_MODEL,
+            prefix=prefix
+        )
+        
+        # Save the executive summary separately
+        exec_summary_path = os.path.join(markdown_dir, f"{question_prefix}executive_summary.md")
+        with open(exec_summary_path, "w", encoding="utf-8") as f:
+            f.write(f"# Executive Summary: {question}\n\n")
+            # Clean the executive summary of any thinking sections before writing
+            cleaned_exec_summary = clean_thinking_sections(exec_summary)
+            f.write(cleaned_exec_summary)
+        safe_print(f"{Colors.GREEN}{prefix} Saved executive summary.{Colors.RESET}")
+
+        # Create a question metadata file with citations
+        metadata = {
+            "question": question,
+            "question_number": question_number,
+            "citations": citations,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        }
+        metadata_path = os.path.join(response_dir, f"{question_prefix}metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        
+        safe_print(f"\n{Colors.BOLD}{Colors.GREEN}{prefix} Question research phase completed successfully.{Colors.RESET}")
+        return True, research_response, citations
+    
+    except Exception as e:
+        safe_print(f"{Colors.RED}Error in research pipeline for question {question_number}: {str(e)}{Colors.RESET}")
+        with print_lock:
+            traceback.print_exc()
+        return False, None, []
+
+def create_master_index(master_folder, questions, results):
+    """
+    Create a master index of all questions and their research outputs.
+    
+    Args:
+        master_folder: The master folder path
+        questions: List of research questions
+        results: List of (success_flag, research_response, citations) tuples
+    
+    Returns:
+        Path to the created index file
+    """
+    markdown_dir = os.path.join(master_folder, "markdown")
+    index_path = os.path.join(markdown_dir, "master_index.md")
+    
+    # Get timestamp for the report
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("# Research Project Results\n\n")
+        f.write(f"Generated on: {timestamp}\n\n")
+        
+        # Count of successful questions
+        successful_count = sum(1 for success, _, _ in results if success)
+        f.write(f"Successfully processed {successful_count} out of {len(questions)} questions.\n\n")
+        
+        # Table of contents
+        f.write("## Table of Contents\n\n")
+        for i, question in enumerate(questions, 1):
+            success = results[i-1][0] if i-1 < len(results) else False
+            status = "✅" if success else "❌"
+            # Clean any thinking sections from the question
+            clean_question = clean_thinking_sections(question)
+            f.write(f"{i}. {status} [Q{i:02d}: {clean_question[:80]}{'...' if len(clean_question) > 80 else ''}](#q{i:02d})\n")
+        
+        f.write("\n---\n\n")
+        
+        # Question details
+        for i, question in enumerate(questions, 1):
+            f.write(f"## Q{i:02d}\n\n")
+            success, research_response, citations = results[i-1] if i-1 < len(results) else (False, None, [])
+            
+            # Clean any thinking sections from the question
+            clean_question = clean_thinking_sections(question)
+            f.write(f"**Question**: {clean_question}\n\n")
+            
+            if not success:
+                f.write("**Status**: ❌ Processing failed\n\n")
+                continue
+                
+            f.write("**Status**: ✅ Successfully processed\n\n")
+            
+            # Citations
+            if citations:
+                f.write(f"**Citations**: {len(citations)}\n\n")
+                f.write("| # | Citation URL |\n")
+                f.write("|---|-------------|\n")
+                for j, citation in enumerate(citations, 1):
+                    f.write(f"| {j} | [{citation[:60]}...]({citation}) |\n")
+            else:
+                f.write("**Citations**: None found\n\n")
+                
+            # Links to outputs - updated to use A prefix instead of Q
+            question_prefix = f"A{i:02d}_"
+            f.write("\n**Research Outputs**:\n\n")
+            f.write(f"- [Research Summary]({question_prefix}research_summary.md)\n")
+            f.write(f"- [Executive Summary]({question_prefix}executive_summary.md)\n")
+            
+            f.write("\n---\n\n")
+    
+    safe_print(f"{Colors.GREEN}Created master index at {index_path}{Colors.RESET}")
+    return index_path
+
+def process_citation(citation_url, question_context, master_folder, citation_id, total_citations, prefix=""):
+    """
+    Phase 3: Process a unique citation once.
+    
+    Args:
+        citation_url: The URL to process
+        question_context: Context about questions using this citation
+        master_folder: The master folder for output
+        citation_id: Unique ID for this citation
+        total_citations: Total number of unique citations
+        prefix: Prefix for log messages
+        
+    Returns:
+        Dictionary with citation processing results
+    """
+    safe_print(f"\n{Colors.BOLD}{Colors.BLUE}{prefix} [{citation_id}/{total_citations}] Processing citation: {citation_url}{Colors.RESET}")
+    
+    try:
+        response_dir = os.path.join(master_folder, "response")
+        markdown_dir = os.path.join(master_folder, "markdown")
+        
+        # Use the unique citation_id for file naming
+        citation_prefix = f"C{citation_id:03d}_"
+        
+        # Generate a summary of questions using this citation for context
+        questions_summary = "\n".join([f"- {q['question']} (Q{q['question_number']:02d})" for q in question_context])
+        context_info = f"This citation was referenced by {len(question_context)} research questions:\n{questions_summary}"
+        
+        # Import the FirecrawlApp client directly
+        from firecrawl import FirecrawlApp
+        firecrawl_client = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
+        
+        # Intelligently scrape the URL with retry logic
+        citation_log_prefix = f"{prefix} [Citation {citation_id}]"
+        
+        # Define a local intelligent_scrape function that uses the local firecrawl_client
+        def local_intelligent_scrape(url, research_query):
+            """
+            More intelligently scrape a URL using Firecrawl.
+            For complex sites, uses site mapping first to find relevant pages.
+            """
+            safe_print(f"{Colors.CYAN}{citation_log_prefix} Analyzing URL: {url}{Colors.RESET}")
+            
+            # Check for social media and video sites that are known to be blocked
+            social_media_domains = ['tiktok.com', 'youtube.com', 'facebook.com', 'instagram.com', 'twitter.com', 'x.com']
+            parsed_url = urlparse(url)
+            
+            if any(domain in parsed_url.netloc for domain in social_media_domains):
+                safe_print(f"{Colors.YELLOW}{citation_log_prefix} Warning: {url} is a social media or video site which may require special Firecrawl access.{Colors.RESET}")
+            
+            try:
+                # Simple sites: Direct scrape with markdown format
+                result = firecrawl_client.scrape_url(url, params={"formats": ["markdown", "html"]})
+                
+                # Check if we got useful content
+                if result.get("markdown") and len(result["markdown"]) > 300:
+                    safe_print(f"{Colors.GREEN}{citation_log_prefix} Successfully scraped direct content.{Colors.RESET}")
+                    return result
+                
+                # If no good content, try mapping the site for complex sites
+                safe_print(f"{Colors.YELLOW}{citation_log_prefix} Direct scrape yielded limited content. Attempting site mapping...{Colors.RESET}")
+                
+                # Extract the base domain for mapping
+                base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                
+                # Map the site to get relevant URLs
+                map_result = firecrawl_client.map_url(base_domain, params={"search": research_query[:30]})
+                
+                # Extract URLs from the map result
+                mapped_urls = []
+                if isinstance(map_result, dict) and "urls" in map_result:
+                    mapped_urls = map_result["urls"]
+                elif isinstance(map_result, list):
+                    mapped_urls = map_result
+                    
+                # If mapping found URLs, scrape the first 2-3 most relevant
+                if mapped_urls and len(mapped_urls) > 0:
+                    safe_print(f"{Colors.GREEN}{citation_log_prefix} Site mapping found {len(mapped_urls)} potential URLs.{Colors.RESET}")
+                    
+                    # Prioritize the original URL if it's in the mapped results
+                    if url in mapped_urls:
+                        mapped_urls.remove(url)
+                        mapped_urls.insert(0, url)
+                    
+                    # Only take the first 3 URLs to avoid excessive API calls
+                    urls_to_scrape = mapped_urls[:3]
+                    
+                    # Combine results from multiple pages
+                    combined_result = {"markdown": "", "html": ""}
+                    
+                    for mapped_url in urls_to_scrape:
+                        safe_print(f"{Colors.YELLOW}{citation_log_prefix} Scraping mapped URL: {mapped_url}{Colors.RESET}")
+                        try:
+                            page_result = firecrawl_client.scrape_url(mapped_url, params={"formats": ["markdown", "html"]})
+                            if page_result.get("markdown"):
+                                combined_result["markdown"] += f"\n\n## Content from {mapped_url}\n\n" + page_result["markdown"]
+                            if page_result.get("html"):
+                                combined_result["html"] += f"\n\n<!-- Content from {mapped_url} -->\n\n" + page_result["html"]
+                        except Exception as e:
+                            safe_print(f"{Colors.RED}{citation_log_prefix} Error scraping mapped URL {mapped_url}: {str(e)}{Colors.RESET}")
+                    
+                    if combined_result["markdown"]:
+                        safe_print(f"{Colors.GREEN}{citation_log_prefix} Successfully scraped content from mapped URLs.{Colors.RESET}")
+                        return combined_result
+                
+                # If we still don't have good content, return what we have
+                safe_print(f"{Colors.YELLOW}{citation_log_prefix} Limited content available from this URL.{Colors.RESET}")
+                return result
+                
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Special handling for common Firecrawl errors
+                if "403" in error_msg and "no longer supported" in error_msg:
+                    safe_print(f"{Colors.RED}{citation_log_prefix} This website requires special access with Firecrawl: {error_msg}{Colors.RESET}")
+                    
+                    # For social media sites, create a special message
+                    if any(domain in parsed_url.netloc for domain in social_media_domains):
+                        return {
+                            "markdown": f"# Content from {url} (Social Media/Video Site)\n\n"
+                                       f"This citation is from a social media or video platform that requires special access with Firecrawl.\n\n"
+                                       f"To view this content, please visit the URL directly: [{url}]({url})\n\n"
+                                       f"**Note**: Social media and video content often requires special permissions to scrape programmatically."
+                        }
+                elif "400" in error_msg:
+                    safe_print(f"{Colors.RED}{citation_log_prefix} Invalid request to Firecrawl: {error_msg}{Colors.RESET}")
+                else:
+                    safe_print(f"{Colors.RED}{citation_log_prefix} Error scraping URL: {error_msg}{Colors.RESET}")
+                
+                raise
+        
+        # Use the local intelligent_scrape function
+        result = with_retry(
+            local_intelligent_scrape,
+            citation_url, context_info, 
+            prefix=citation_log_prefix
+        )
+        
+        # Save the raw Firecrawl response
+        raw_json_path = os.path.join(response_dir, f"{citation_prefix}firecrawl.json")
+        with open(raw_json_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+        safe_print(f"{Colors.GREEN}{prefix} Saved Firecrawl response for citation {citation_id}.{Colors.RESET}")
+        
+        # Clean the response with Perplexity
+        content_for_cleanup = result.get("markdown") or ""
+        if not content_for_cleanup:
+            safe_print(f"{Colors.YELLOW}{prefix} No textual content found for cleanup. Skipping.{Colors.RESET}")
+            cleaned_content = "No content available."
+        else:
+            safe_print(f"{Colors.YELLOW}{prefix} Cleaning up content with Perplexity...{Colors.RESET}")
+            # Limit content size to avoid token limits
+            truncated_content = content_for_cleanup[:30000] if len(content_for_cleanup) > 30000 else content_for_cleanup
+            
+            cleanup_prompt = f"""
+Rewrite the following content more cleanly as Markdown.
+Make it structured, neat, and well-formatted.
+This is from the URL: {citation_url}
+
+{truncated_content}
+"""
+            cleanup_response = with_retry(
+                query_perplexity,
+                prompt=cleanup_prompt,
+                model=PERPLEXITY_CLEANUP_MODEL,
+                system_prompt="You are a Markdown formatter. Return only well-structured Markdown with clear headings, proper lists, and good organization of information.",
+                prefix=citation_log_prefix
+            )
+            
+            # Extract the final text from cleanup
+            if cleanup_response.get("choices") and len(cleanup_response["choices"]) > 0:
+                cleaned_content = cleanup_response["choices"][0]["message"].get("content", "")
+                # Ensure we clean any thinking sections from the content
+                cleaned_content = clean_thinking_sections(cleaned_content)
+            else:
+                cleaned_content = "Error: Failed to get cleaned content from Perplexity."
+        
+        # Save the cleaned markdown
+        md_filename = os.path.join(markdown_dir, f"{citation_prefix}citation.md")
+        with open(md_filename, "w", encoding="utf-8") as f:
+            f.write(f"# Citation {citation_id}: {citation_url}\n\n")
+            f.write(f"## Referenced by\n\n{questions_summary}\n\n")
+            f.write("## Content\n\n")
+            # Ensure we clean any thinking sections from the content again before writing
+            final_cleaned_content = clean_thinking_sections(cleaned_content)
+            f.write(final_cleaned_content)
+        safe_print(f"{Colors.GREEN}{prefix} Saved cleaned Markdown for citation {citation_id}.{Colors.RESET}")
+        
+        # Create citation metadata
+        citation_metadata = {
+            "citation_id": citation_id,
+            "url": citation_url,
+            "questions": question_context,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        }
+        metadata_path = os.path.join(response_dir, f"{citation_prefix}metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(citation_metadata, f, indent=2)
+        
+        return {
+            "citation_id": citation_id,
+            "url": citation_url,  # Ensure we return the original URL
+            "success": True,
+            "content": cleaned_content
+        }
+        
+    except Exception as e:
+        error_msg = str(e)
+        safe_print(f"{Colors.RED}{prefix} Error processing citation #{citation_id}: {error_msg}{Colors.RESET}")
+        
+        # Create a special error message for the citation
+        error_content = f"# Error Processing Citation\n\n**URL**: {citation_url}\n\n"
+        error_content += f"**Error details**: {error_msg}\n\n"
+        error_content += f"## Referenced by\n\n{questions_summary}\n\n"
+        
+        return {
+            "citation_id": citation_id,
+            "url": citation_url,  # Ensure we return the original URL
+            "success": False,
+            "content": error_content,
+            "error": error_msg
+        }
+
+def extract_and_deduplicate_citations(all_questions_results):
+    """
+    Phase 2: Extract and deduplicate all citations from research responses.
+    Also ranks citations by frequency of reference.
+    
+    Args:
+        all_questions_results: List of tuples (success_flag, research_response, citations)
+    
+    Returns:
+        Dictionary mapping unique citations to lists of question data
+    """
+    citation_map = {}
+    invalid_citations = 0
+    
+    for idx, (success, response, citations) in enumerate(all_questions_results):
+        if not success or not citations:
+            continue
+            
+        question_number = idx + 1
+        question = None
+        
+        # Extract the question from the response
+        if response and "prompt" in response:
+            question = response["prompt"]
+        
+        # If we couldn't extract the question, use a placeholder
+        if not question:
+            question = f"Question {question_number}"
+        
+        # Debug information
+        safe_print(f"{Colors.CYAN}Citations for question {question_number}: {len(citations)}{Colors.RESET}")
+        for i, citation in enumerate(citations, 1):
+            safe_print(f"{Colors.CYAN}  {i}. {citation} (type: {type(citation).__name__}){Colors.RESET}")
+            
+        # Add each citation to the map (validate it's a string first)
+        for citation in citations:
+            # Skip invalid citations (must be a string representing a URL)
+            if not isinstance(citation, str):
+                invalid_citations += 1
+                safe_print(f"{Colors.YELLOW}Skipping invalid citation in question {question_number}: {type(citation).__name__} type instead of string URL{Colors.RESET}")
+                continue
+                
+            # Basic URL validation (can enhance this if needed)
+            if not citation.startswith(('http://', 'https://')):
+                invalid_citations += 1
+                safe_print(f"{Colors.YELLOW}Skipping invalid URL in question {question_number}: {citation}{Colors.RESET}")
+                continue
+                
+            # Get existing references or start a new list
+            if citation not in citation_map:
+                citation_map[citation] = []
+                
+            # Add the question reference
+            citation_map[citation].append({
+                "question": question,
+                "question_number": question_number
+            })
+    
+    if invalid_citations > 0:
+        safe_print(f"{Colors.YELLOW}Total invalid citations skipped: {invalid_citations}{Colors.RESET}")
+        
+    # Debug the citation map
+    safe_print(f"{Colors.CYAN}Citation map contains {len(citation_map)} unique citations:{Colors.RESET}")
+    for url, references in citation_map.items():
+        safe_print(f"{Colors.CYAN}  URL: {url} (Referenced by {len(references)} questions){Colors.RESET}")
+        
+    return citation_map
+
+def prioritize_citations(citation_map, max_citations=50):
+    """
+    Prioritize citations based on frequency of reference and return top N.
+    
+    Args:
+        citation_map: Dictionary mapping citations to list of referencing questions
+        max_citations: Maximum number of citations to process
+        
+    Returns:
+        Tuple of (prioritized_citations, skipped_count)
+    """
+    # Debug input
+    safe_print(f"{Colors.CYAN}Prioritizing citations from map with {len(citation_map)} entries{Colors.RESET}")
+    
+    # Sort citations by number of references (descending)
+    sorted_citations = sorted(
+        citation_map.items(), 
+        key=lambda item: len(item[1]), 
+        reverse=True
+    )
+    
+    # Debug sorted results
+    safe_print(f"{Colors.CYAN}Sorted citations by reference count:{Colors.RESET}")
+    for i, (url, references) in enumerate(sorted_citations[:5], 1):
+        safe_print(f"{Colors.CYAN}  {i}. {url} (Referenced by {len(references)} questions){Colors.RESET}")
+    if len(sorted_citations) > 5:
+        safe_print(f"{Colors.CYAN}  ... and {len(sorted_citations) - 5} more{Colors.RESET}")
+    
+    # Take top N citations
+    prioritized_citations = dict(sorted_citations[:max_citations])
+    skipped_count = len(sorted_citations) - max_citations if len(sorted_citations) > max_citations else 0
+    
+    # Debug output
+    safe_print(f"{Colors.CYAN}Returning {len(prioritized_citations)} prioritized citations, skipping {skipped_count}{Colors.RESET}")
+    
+    return prioritized_citations, skipped_count
+
+# Add a new timeout wrapper function
+def with_timeout(func, timeout, *args, **kwargs):
+    """
+    Run a function with a timeout. If the function doesn't complete within
+    the timeout, return an error result.
+    
+    Args:
+        func: The function to call
+        timeout: Timeout in seconds
+        *args: Arguments to pass to the function
+        **kwargs: Keyword arguments to pass to the function
+        
+    Returns:
+        Result of the function or an error result if timeout occurs
+    """
+    import threading
+    import queue
+    
+    result_queue = queue.Queue()
+    
+    # Extract citation URL and other parameters for process_citation
+    citation_url = None
+    citation_id = "unknown"
+    question_context = []
+    
+    if func.__name__ == 'process_citation' and args:
+        citation_url = args[0]
+        if len(args) > 1:
+            question_context = args[1]
+        if len(args) > 3:
+            citation_id = args[3]
+        
+        # Double-check that URL is valid
+        if not isinstance(citation_url, str):
+            return {
+                "citation_id": citation_id,
+                "url": str(citation_url),  # Convert to string for display
+                "success": False,
+                "content": f"# Error Processing Citation\n\n**Error details**: Expected URL string, received {type(citation_url).__name__}\n\n",
+                "error": f"Invalid citation URL type: {type(citation_url).__name__}"
+            }
+        
+        if not citation_url.startswith(('http://', 'https://')):
+            return {
+                "citation_id": citation_id,
+                "url": citation_url,
+                "success": False,
+                "content": f"# Error Processing Citation\n\n**Error details**: Invalid URL format\n\n",
+                "error": "Invalid URL format"
+            }
+    
+    def worker():
+        try:
+            result = func(*args, **kwargs)
+            result_queue.put(("success", result))
+        except Exception as e:
+            result_queue.put(("error", str(e)))
+    
+    thread = threading.Thread(target=worker)
+    thread.daemon = True
+    thread.start()
+    
+    try:
+        status, result = result_queue.get(timeout=timeout)
+        if status == "error":
+            if citation_url:
+                return {
+                    "citation_id": citation_id,
+                    "url": citation_url,
+                    "success": False,
+                    "content": f"# Error Processing Citation\n\n**URL**: {citation_url}\n\n**Error details**: {result}\n\n",
+                    "error": result
+                }
+            else:
+                raise Exception(result)
+        return result
+    except queue.Empty:
+        # Timeout occurred
+        if citation_url:
+            return {
+                "citation_id": citation_id,
+                "url": citation_url,
+                "success": False,
+                "content": f"# Error Processing Citation\n\n**URL**: {citation_url}\n\n**Error details**: Processing timed out after {timeout} seconds\n\n",
+                "error": f"Timeout after {timeout} seconds"
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Timeout after {timeout} seconds"
+            }
+
+def create_citation_index(master_folder, citation_map, citation_results, skipped_count=0):
+    """
+    Create an index of all citations in Markdown format.
+    
+    Args:
+        master_folder: The master folder for output
+        citation_map: Mapping of citations to questions (full map)
+        citation_results: Results from processing citations (prioritized ones)
+        skipped_count: Number of citations that were skipped due to prioritization
+    """
+    # Debug the citation_results
+    safe_print(f"{Colors.CYAN}Creating citation index with {len(citation_results)} processed citations{Colors.RESET}")
+    for i, citation_result in enumerate(citation_results, 1):
+        url = citation_result.get('url', 'Unknown URL')
+        if not isinstance(url, str):
+            url = str(url)
+        safe_print(f"{Colors.CYAN}  Citation result {i}: url={url}, success={citation_result.get('success', False)}{Colors.RESET}")
+    
+    markdown_dir = os.path.join(master_folder, "markdown")
+    citation_index_path = os.path.join(markdown_dir, "citation_index.md")
+    
+    with open(citation_index_path, "w", encoding="utf-8") as f:
+        f.write("# Citation Index\n\n")
+        f.write("This document indexes all unique citations found during research.\n\n")
+        
+        if skipped_count > 0:
+            f.write(f"**Note**: {skipped_count} less referenced citations were not processed to optimize API usage and processing time.\n\n")
+        
+        # Create sections
+        f.write("## Processed Citations\n\n")
+        f.write("These citations were processed and have content available:\n\n")
+        
+        # Create a table of contents for processed citations
+        for i, citation_result in enumerate(citation_results, 1):
+            citation_url = citation_result.get("url", "Unknown URL")
+            # Ensure the URL is properly formatted for display
+            if not isinstance(citation_url, str):
+                citation_url = str(citation_url)
+            
+            display_url = citation_url
+            if len(display_url) > 60:
+                display_url = display_url[:60] + "..."
+                
+            success_mark = "✅" if citation_result.get("success", False) else "❌"
+            ref_count = len(citation_map.get(citation_url, []))
+            f.write(f"{i}. {success_mark} [Citation {i}: {display_url}](#citation-{i}) (Referenced by {ref_count} questions)\n")
+        
+        f.write("\n---\n\n")
+        
+        # Add detailed entries for each processed citation
+        for i, citation_result in enumerate(citation_results, 1):
+            citation_url = citation_result.get("url", "Unknown URL")
+            if not isinstance(citation_url, str):
+                citation_url = str(citation_url)
+                
+            success_status = "Successfully processed" if citation_result.get("success", False) else "Processing failed"
+            
+            f.write(f"## Citation {i}\n\n")
+            
+            # Handle URLs properly based on their type
+            if isinstance(citation_url, str) and citation_url.startswith(('http://', 'https://')):
+                f.write(f"**URL**: [{citation_url}]({citation_url})\n\n")
+            else:
+                f.write(f"**URL**: {citation_url}\n\n")
+                
+            f.write(f"**Status**: {success_status}\n\n")
+            
+            # List referencing questions
+            questions = citation_map.get(citation_url, [])
+            f.write(f"**Referenced by {len(questions)} questions**:\n\n")
+            for q in questions:
+                # Clean any thinking sections from the question
+                clean_question = clean_thinking_sections(q['question'])
+                f.write(f"- Q{q['question_number']:02d}: {clean_question}\n")
+            
+            f.write("\n---\n\n")
+        
+        # Create a section for skipped citations if any
+        if skipped_count > 0:
+            f.write("## Skipped Citations\n\n")
+            f.write("These citations were found but not processed due to prioritization:\n\n")
+            
+            # Get URLs of processed citations
+            processed_urls = []
+            for result in citation_results:
+                url = result.get("url", "Unknown URL")
+                if not isinstance(url, str):
+                    url = str(url)
+                processed_urls.append(url)
+            
+            # Find skipped citations
+            skipped_citation_items = [
+                (url, refs) for url, refs in citation_map.items() 
+                if url not in processed_urls
+            ]
+            
+            # Sort by reference count (descending)
+            skipped_citation_items.sort(key=lambda x: len(x[1]), reverse=True)
+            
+            # List them
+            for i, (url, refs) in enumerate(skipped_citation_items, 1):
+                ref_count = len(refs)
+                # Handle URLs properly based on their type
+                if isinstance(url, str):
+                    display_url = url[:60] + "..." if len(url) > 60 else url
+                    if url.startswith(('http://', 'https://')):
+                        f.write(f"{i}. [{display_url}]({url}) (Referenced by {ref_count} questions)\n")
+                    else:
+                        f.write(f"{i}. {display_url} (Referenced by {ref_count} questions)\n")
+                else:
+                    f.write(f"{i}. {str(url)} (Referenced by {ref_count} questions)\n")
+    
+    safe_print(f"{Colors.GREEN}Created citation index with all {len(citation_map)} citations.{Colors.RESET}")
+    return citation_index_path
+
+def consolidate_summary_files(master_folder):
+    # Implementation of consolidate_summary_files function
+    pass
+
+def move_file(source, destination):
+    # Implementation of move_file function
+    pass
+
+def upload_research_to_openai(master_folder, project_params):
+    # Implementation of upload_research_to_openai function
+    pass
+
+def main():
+    # Implementation of main function
+    pass
+
+if __name__ == "__main__":
+    main() 

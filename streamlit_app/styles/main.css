@@ -1,0 +1,409 @@
+/* 
+   Custom CSS for the Research Assistant Streamlit App
+   This file provides enhanced styling for chat interfaces, buttons, and overall UI
+*/
+
+/* General app styling */
+.stApp {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Reduce padding in all Streamlit containers */
+.block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 1rem !important;
+    max-width: 95% !important; /* Use more screen real estate */
+}
+
+/* Make header more compact */
+header[data-testid="stHeader"] {
+    background-color: transparent;
+    height: auto !important;
+    padding: 0.5rem 0 !important;
+}
+
+/* Chat container - makes it look like modern chat apps */
+.chat-container {
+    border-radius: 8px;
+    background-color: rgba(247, 247, 250, 0.8);
+    padding: 8px;
+    margin-bottom: 10px;
+    max-height: 75vh; /* Use percentage of viewport height */
+    overflow-y: auto;
+}
+
+/* Make scrollbars thinner and more modern */
+.chat-container::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+
+.chat-container::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.05);
+    border-radius: 10px;
+}
+
+.chat-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+}
+
+.chat-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
+/* Reduce space between chat messages */
+[data-testid="stChatMessage"] {
+    margin-bottom: 6px !important;
+    padding: 8px !important;
+    border-radius: 8px;
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+/* User message styling */
+[data-testid="stChatMessage"][data-testid="user"] {
+    background-color: rgba(73, 119, 236, 0.1);
+    border-left: 3px solid rgba(73, 119, 236, 0.7);
+    margin-left: 20% !important; /* Shift user messages to the right */
+}
+
+/* Assistant message styling */
+[data-testid="stChatMessage"][data-testid="assistant"] {
+    background-color: rgba(240, 242, 246, 0.8);
+    border-left: 3px solid rgba(110, 110, 130, 0.4);
+    margin-right: 20% !important; /* Shift assistant messages to the left */
+}
+
+/* Make chat bubble text more compact */
+[data-testid="stMarkdown"] p {
+    margin-bottom: 0.3rem !important;
+    line-height: 1.4 !important;
+}
+
+/* Citations styling - more compact */
+.citation {
+    font-size: 0.8em;
+    color: #555;
+    padding: 6px;
+    border-radius: 6px;
+    margin-top: 5px;
+    background-color: rgba(0, 0, 0, 0.03);
+    border-left: 2px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Web citation styling - make it visually distinct */
+.web-citation {
+    background-color: rgba(73, 119, 236, 0.05);
+    border-left: 2px solid rgba(73, 119, 236, 0.5);
+}
+
+.web-citation .citation-source a {
+    color: rgb(73, 119, 236);
+    text-decoration: none;
+}
+
+.web-citation .citation-source a:hover {
+    text-decoration: underline;
+}
+
+.citation-header {
+    font-weight: bold;
+    margin-bottom: 2px; /* Reduced margin */
+}
+
+.citation-source {
+    color: #777;
+    font-style: italic;
+    margin-top: 2px; /* Reduced margin */
+}
+
+/* Project selector styling - more compact */
+.project-selector {
+    padding: 8px;
+    border-radius: 8px;
+    background-color: rgba(247, 247, 250, 0.8);
+    margin-bottom: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* Button styling - more compact */
+.stButton > button {
+    border-radius: 6px;
+    padding: 3px 12px !important;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    height: auto !important;
+    line-height: 1.5 !important;
+}
+
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.primary-button > button {
+    background-color: rgb(73, 119, 236);
+    color: white;
+    border: none;
+}
+
+.secondary-button > button {
+    background-color: transparent;
+    color: rgb(73, 119, 236);
+    border: 1px solid rgb(73, 119, 236);
+}
+
+.danger-button > button {
+    background-color: rgb(236, 73, 73);
+    color: white;
+    border: none;
+}
+
+/* Loading animation for chat */
+@keyframes typing {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+}
+
+.typing-indicator span {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 2px;
+    background-color: rgba(73, 119, 236, 0.7);
+    border-radius: 50%;
+    animation: typing 1s infinite;
+}
+
+.typing-indicator span:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.typing-indicator span:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+/* Chat input styling - more compact and modern */
+[data-testid="stChatInput"] {
+    border-radius: 20px !important;
+    border: 1px solid rgba(0, 0, 0, 0.1) !important;
+    background-color: white !important;
+    margin-top: 5px !important;
+    padding: 0 !important;
+}
+
+[data-testid="stChatInput"] > div {
+    padding: 6px 12px !important;
+}
+
+/* Settings panel styling */
+.settings-panel {
+    background-color: rgba(247, 247, 250, 0.8);
+    border-radius: 8px;
+    padding: 8px;
+    margin-top: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* Card styling for project selection - more compact */
+.project-card {
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    padding: 10px;
+    margin-bottom: 8px;
+    background-color: white;
+    transition: all 0.2s ease;
+}
+
+.project-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+    cursor: pointer;
+}
+
+.project-card.selected {
+    border: 2px solid rgb(73, 119, 236);
+    background-color: rgba(73, 119, 236, 0.05);
+}
+
+.project-card-title {
+    font-weight: bold;
+    margin-bottom: 3px;
+}
+
+.project-card-info {
+    display: flex;
+    font-size: 0.8em;
+    color: #555;
+}
+
+.project-card-info div {
+    margin-right: 12px;
+}
+
+/* Model selector styling - more compact */
+.model-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.model-option {
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 6px;
+    padding: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.model-option:hover {
+    background-color: rgba(73, 119, 236, 0.05);
+}
+
+.model-option.selected {
+    border: 2px solid rgb(73, 119, 236);
+    background-color: rgba(73, 119, 236, 0.05);
+}
+
+.model-name {
+    font-weight: 500;
+}
+
+.model-description {
+    font-size: 0.8em;
+    color: #555;
+    margin-top: 2px;
+}
+
+/* Make expanders more compact */
+.streamlit-expanderHeader {
+    font-size: 0.9em !important;
+    padding: 0.5rem !important;
+}
+
+.streamlit-expanderContent {
+    padding: 0.5rem !important;
+}
+
+/* More compact toggles */
+.stToggle > div {
+    padding: 0.3rem 0 !important;
+}
+
+/* Compact layout for tabs */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 1px !important;
+}
+
+.stTabs [data-baseweb="tab"] {
+    padding: 0.5rem 1rem !important;
+    font-size: 0.9rem !important;
+}
+
+/* Add a modern app layout with sidebar adjustments */
+[data-testid="stSidebar"] {
+    min-width: 300px !important;
+    max-width: 400px !important;
+    background-color: rgba(247, 247, 250, 0.6);
+}
+
+/* Reduce whitespace in Streamlit elements */
+div.row-widget.stRadio > div {
+    flex-direction: row;
+    align-items: center;
+}
+
+div.row-widget.stRadio > div[role="radiogroup"] > label {
+    padding: 0.2rem 0.5rem !important;
+    margin: 0 0.2rem !important;
+}
+
+/* Compact info messages */
+.stAlert {
+    padding: 0.5rem !important;
+}
+
+.stAlert > div {
+    padding: 0.2rem 0.5rem !important;
+}
+
+/* Fade-in animation for elements */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+/* Tooltip styling */
+.tooltip {
+    position: relative;
+    display: inline-block;
+}
+
+.tooltip .tooltip-text {
+    visibility: hidden;
+    width: 200px;
+    background-color: #333;
+    color: white;
+    text-align: center;
+    border-radius: 6px;
+    padding: 5px;
+    position: absolute;
+    z-index: 1;
+    bottom: 125%;
+    left: 50%;
+    margin-left: -100px;
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.tooltip:hover .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* Debug panel styling */
+.debug-panel {
+    background-color: #f7f7f7;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px;
+    margin-top: 15px;
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.85em;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.debug-entry {
+    margin-bottom: 6px;
+    padding: 4px;
+    border-radius: 4px;
+}
+
+.debug-entry.info {
+    background-color: rgba(73, 119, 236, 0.05);
+}
+
+.debug-entry.warning {
+    background-color: rgba(236, 191, 73, 0.1);
+}
+
+.debug-entry.error {
+    background-color: rgba(236, 73, 73, 0.1);
+}
+
+.debug-timestamp {
+    font-size: 0.9em;
+    color: #777;
+    margin-right: 8px;
+}
+
+/* Spinner customization for loading states */
+.stSpinner > div > div {
+    border-color: rgb(73, 119, 236) transparent transparent !important;
+} 
