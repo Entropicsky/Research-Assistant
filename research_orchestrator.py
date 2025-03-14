@@ -620,7 +620,7 @@ def extract_and_deduplicate_citations(all_questions_results):
         all_questions_results: List of tuples (success_flag, research_response, citations)
     
     Returns:
-        Dictionary mapping unique citations to lists of question data
+        Tuple of (citation_map, unique_citation_count)
     """
     citation_map = {}
     
@@ -667,7 +667,8 @@ def extract_and_deduplicate_citations(all_questions_results):
         else:
             safe_print(f"{Colors.YELLOW}Warning: Unknown citation format: {type(citations)}{Colors.RESET}")
     
-    return citation_map
+    unique_citation_count = len(citation_map)
+    return citation_map, unique_citation_count
 
 def prioritize_citations(citation_map, max_citations=50):
     """
@@ -1256,6 +1257,246 @@ def load_project_tracking():
     
     return data
 
+def get_project_by_id(project_id):
+    """
+    Retrieve a project from the tracking file by its ID.
+    
+    Args:
+        project_id (str): The ID of the project to retrieve
+    
+    Returns:
+        dict: The project data or None if not found
+    """
+    try:
+        # Load existing tracking data
+        tracking_data = load_project_tracking()
+        
+        # Find the project by ID
+        for project in tracking_data.get("projects", []):
+            if project.get("id") == project_id:
+                return project
+        
+        safe_print(f"{Colors.YELLOW}Warning: Project with ID {project_id} not found in tracking file{Colors.RESET}")
+        return None
+    except Exception as e:
+        safe_print(f"{Colors.RED}Error retrieving project by ID: {str(e)}{Colors.RESET}")
+        return None
+
+def get_project_folder(project_data):
+    """
+    Get the folder path for an existing project.
+    
+    Args:
+        project_data (dict): The project data
+    
+    Returns:
+        str: The project folder path or None if not found
+    """
+    try:
+        # Check if the project has local storage information
+        local_storage = project_data.get("local_storage", {})
+        folder_path = local_storage.get("folder")
+        
+        if not folder_path:
+            safe_print(f"{Colors.YELLOW}Warning: Project does not have a folder path in its data{Colors.RESET}")
+            return None
+            
+        # Verify the folder exists
+        if not os.path.exists(folder_path):
+            safe_print(f"{Colors.YELLOW}Warning: Project folder does not exist: {folder_path}{Colors.RESET}")
+            return None
+            
+        return folder_path
+    except Exception as e:
+        safe_print(f"{Colors.RED}Error retrieving project folder: {str(e)}{Colors.RESET}")
+        return None
+
+def add_questions_to_project(project_data, new_questions, args):
+    """
+    Add new questions to an existing project.
+    
+    Args:
+        project_data (dict): The existing project data
+        new_questions (list): List of new questions to add
+        args: Command-line arguments
+    
+    Returns:
+        dict: Updated project data or None if failed
+    """
+    try:
+        # Get the project folder
+        master_folder = get_project_folder(project_data)
+        if not master_folder:
+            return None
+            
+        # Get existing questions
+        existing_questions = project_data.get("parameters", {}).get("questions", [])
+        
+        # Calculate starting question number for new questions
+        start_question_number = len(existing_questions) + 1
+        
+        # Update the project data with combined questions
+        all_questions = existing_questions + new_questions
+        project_data["parameters"]["questions"] = all_questions
+        
+        # Update the project status
+        project_data["status"] = "in_progress"
+        
+        # Update the project in the tracking file
+        update_project_in_tracking(project_data["id"], {
+            "parameters": {"questions": all_questions},
+            "status": "in_progress"
+        })
+        
+        # Update the README to include new questions
+        readme_path = os.path.join(master_folder, "README.md")
+        if os.path.exists(readme_path):
+            with open(readme_path, "r", encoding="utf-8") as f:
+                readme_content = f.read()
+                
+            # Check if README already has a Research Questions section
+            if "## Research Questions" in readme_content:
+                # Split the content at the Research Questions section
+                parts = readme_content.split("## Research Questions")
+                before_questions = parts[0] + "## Research Questions\n\n"
+                
+                # Create updated questions list
+                questions_content = ""
+                for i, q in enumerate(all_questions, 1):
+                    questions_content += f"{i}. {q}\n"
+                
+                # Find the next section if any
+                after_questions = ""
+                if len(parts) > 1 and "##" in parts[1]:
+                    after_parts = parts[1].split("##", 1)
+                    after_questions = "##" + after_parts[1]
+                
+                # Write updated README
+                with open(readme_path, "w", encoding="utf-8") as f:
+                    f.write(before_questions + questions_content + "\n" + after_questions)
+            else:
+                # Append Research Questions section to README
+                with open(readme_path, "a", encoding="utf-8") as f:
+                    f.write("\n## Research Questions\n\n")
+                    for i, q in enumerate(all_questions, 1):
+                        f.write(f"{i}. {q}\n")
+        
+        # Process the new questions
+        safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PROCESSING NEW QUESTIONS ========{Colors.RESET}")
+        safe_print(f"{Colors.CYAN}Adding {len(new_questions)} new questions to existing project{Colors.RESET}")
+        
+        # Load the rate limit settings
+        RATE_LIMIT_QUESTIONS_PER_WORKER = int(os.getenv('RATE_LIMIT_QUESTIONS_PER_WORKER', 10))
+        THREAD_STAGGER_DELAY = float(os.getenv('THREAD_STAGGER_DELAY', 5.0))
+        
+        # Override with command line args if provided
+        if args.stagger_delay is not None:
+            THREAD_STAGGER_DELAY = args.stagger_delay
+            
+        # Calculate max workers based on number of questions and rate limit
+        if args.max_workers is not None:
+            max_workers = args.max_workers
+        else:
+            max_workers = max(1, int(len(new_questions) / RATE_LIMIT_QUESTIONS_PER_WORKER))
+        
+        # Get topic and perspective if available
+        topic = project_data.get("parameters", {}).get("topic")
+        perspective = project_data.get("parameters", {}).get("perspective")
+        
+        # Process each new question
+        all_question_results = []
+        successful_questions = 0
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Create a future for each question
+            futures = {}
+            for i, question in enumerate(new_questions, start_question_number):
+                # Stagger the thread starts to avoid API rate limits
+                if i > start_question_number and THREAD_STAGGER_DELAY > 0:
+                    time.sleep(THREAD_STAGGER_DELAY)
+                
+                future = executor.submit(
+                    research_pipeline,
+                    question,
+                    master_folder,
+                    i,
+                    len(all_questions),
+                    topic,
+                    perspective
+                )
+                futures[future] = (i, question)
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                i, question = futures[future]
+                try:
+                    success, research_response, citations = future.result()
+                    all_question_results.append((success, research_response, citations))
+                    
+                    if success:
+                        successful_questions += 1
+                        
+                except Exception as e:
+                    safe_print(f"{Colors.RED}Error processing question {i}: {str(e)}{Colors.RESET}")
+                    all_question_results.append((False, None, []))
+        
+        # Extract and deduplicate citations from all questions
+        safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== EXTRACTING CITATIONS FROM NEW QUESTIONS ========{Colors.RESET}")
+        citation_map, unique_citation_count = extract_and_deduplicate_citations(all_question_results)
+        
+        # Process citations if there are any
+        if citation_map:
+            # Prioritize citations based on reference count
+            prioritized_citation_map, skipped_count = prioritize_citations(citation_map, args.max_citations)
+            
+            # Check for skipped citations
+            if skipped_count > 0:
+                safe_print(f"{Colors.YELLOW}Skipping {skipped_count} less referenced citations to stay within limit of {args.max_citations}{Colors.RESET}")
+            
+            # Process each unique citation
+            safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PROCESSING CITATIONS FROM NEW QUESTIONS ========{Colors.RESET}")
+            citation_results = process_citations(prioritized_citation_map, master_folder, max_workers, THREAD_STAGGER_DELAY)
+            
+            # Create indexes
+            master_index_path = create_master_index(master_folder, all_questions, all_question_results)
+            citation_index_path = create_citation_index(master_folder, citation_map, citation_results, skipped_count)
+            
+            # Consolidate summaries
+            safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== CONSOLIDATING SUMMARIES ========{Colors.RESET}")
+            consolidate_summary_files(master_folder, "executive_summary", "consolidated_executive_summaries.md", "Consolidated Executive Summaries")
+            consolidate_summary_files(master_folder, "research_summary", "consolidated_research_summaries.md", "Consolidated Research Summaries")
+            
+            # Move master index and citation index to summaries folder
+            move_file(master_index_path, os.path.join(master_folder, "summaries"))
+            move_file(citation_index_path, os.path.join(master_folder, "summaries"))
+        else:
+            safe_print(f"{Colors.YELLOW}No citations found in new questions. Skipping citation processing phase.{Colors.RESET}")
+            # Create the master index even if there are no citations
+            master_index_path = create_master_index(master_folder, all_questions, all_question_results)
+            
+            # Consolidate summary files and move master index
+            safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== CONSOLIDATING SUMMARIES ========{Colors.RESET}")
+            consolidate_summary_files(master_folder, "executive_summary", "consolidated_executive_summaries.md", "Consolidated Executive Summaries")
+            consolidate_summary_files(master_folder, "research_summary", "consolidated_research_summaries.md", "Consolidated Research Summaries")
+            move_file(master_index_path, os.path.join(master_folder, "summaries"))
+        
+        # Process files with OpenAI if enabled
+        if ENABLE_OPENAI_INTEGRATION:
+            project_data = process_files_with_openai(master_folder, project_data)
+        
+        # Update project status to completed
+        project_data["status"] = "completed"
+        update_project_in_tracking(project_data["id"], {"status": "completed"})
+        
+        safe_print(f"\n{Colors.BOLD}{Colors.GREEN}Successfully added {len(new_questions)} new questions to project.{Colors.RESET}")
+        return project_data
+        
+    except Exception as e:
+        safe_print(f"{Colors.RED}Error adding questions to project: {str(e)}{Colors.RESET}")
+        with print_lock:
+            traceback.print_exc()
+        return None
+
 def save_project_tracking(data):
     """
     Save the project tracking data to JSON file.
@@ -1498,38 +1739,166 @@ def add_files_to_vector_store(client, vector_store_id, file_ids, prefix=""):
 
 def check_files_processing_status(client, vector_store_id, prefix=""):
     """
-    Check the processing status of files in a vector store.
+    Check if all files in a vector store have been processed.
     
     Args:
         client: The OpenAI client
-        vector_store_id: ID of the vector store
+        vector_store_id: The ID of the vector store
         prefix: Prefix for log messages
         
     Returns:
-        True if all files are processed, False otherwise
+        bool: True if all files are processed, False otherwise
     """
-    if not client or not vector_store_id:
-        return False
-        
     try:
-        result = client.vector_stores.files.list(vector_store_id=vector_store_id)
+        # Get the vector store
+        vector_store = client.beta.vector_stores.retrieve(vector_store_id)
         
+        # Get all file IDs in the vector store
+        files_in_store = client.beta.vector_stores.file_batches.list(vector_store_id=vector_store_id)
+        
+        # Check if any files are still processing
         all_completed = True
-        processed_count = 0
-        
-        for file in result.data:
-            if file.status == "completed":
-                processed_count += 1
-            else:
+        for file_batch in files_in_store.data:
+            if file_batch.status != "completed":
                 all_completed = False
-                
-        total_files = len(result.data)
-        safe_print(f"{Colors.CYAN}{prefix} Processing status: {processed_count}/{total_files} files completed{Colors.RESET}")
+                safe_print(f"{Colors.YELLOW}{prefix} File batch {file_batch.id} status: {file_batch.status}{Colors.RESET}")
         
         return all_completed
     except Exception as e:
-        safe_print(f"{Colors.RED}{prefix} Error checking file status: {str(e)}{Colors.RESET}")
+        safe_print(f"{Colors.RED}{prefix} Error checking file processing status: {str(e)}{Colors.RESET}")
         return False
+
+def process_citations(prioritized_citation_map, master_folder, max_workers, thread_stagger_delay=5.0):
+    """
+    Process each unique citation in parallel.
+    
+    Args:
+        prioritized_citation_map: Dictionary mapping citation URLs to question contexts
+        master_folder: Path to the master folder
+        max_workers: Maximum number of worker threads
+        thread_stagger_delay: Delay between starting thread in seconds
+        
+    Returns:
+        List of citation processing results
+    """
+    # Display citation processing parameters
+    safe_print(f"{Colors.MAGENTA}Citation timeout: {CITATION_TIMEOUT} seconds per citation{Colors.RESET}")
+    safe_print(f"{Colors.MAGENTA}Worker threads: {max_workers}{Colors.RESET}")
+    safe_print(f"{Colors.MAGENTA}Thread stagger delay: {thread_stagger_delay} seconds{Colors.RESET}")
+    
+    # Process citations in parallel
+    citation_results = []
+    successful_citations = 0
+    failed_citations = 0
+    timeout_citations = 0
+    
+    # Create a progress tracking function
+    def update_progress():
+        total = len(prioritized_citation_map)
+        completed = successful_citations + failed_citations
+        if total == 0:
+            return
+        
+        percent = int((completed / total) * 100)
+        bar_length = 40
+        filled_length = int(bar_length * completed / total)
+        bar = '█' * filled_length + '░' * (bar_length - filled_length)
+        
+        # Clear the line and print the progress bar
+        sys.stdout.write('\r')
+        sys.stdout.write(f"{Colors.CYAN}Progress: [{bar}] {percent}% | ✅ {successful_citations} | ❌ {failed_citations} | ⏱️ {timeout_citations} | Total: {completed}/{total}{Colors.RESET}")
+        sys.stdout.flush()
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Create a future for each unique citation
+        futures = {}
+        for i, (citation_url, question_context) in enumerate(prioritized_citation_map.items(), 1):
+            # Stagger the thread starts to avoid API rate limits
+            if i > 1 and thread_stagger_delay > 0:
+                time.sleep(thread_stagger_delay)
+                
+            # For log message, show citation rank by reference count
+            ref_count = len(question_context)
+            
+            # Debug output - print the citation URL and its type
+            safe_print(f"{Colors.YELLOW}Debug - Before with_timeout - Citation {i}: {citation_url} (type: {type(citation_url)}){Colors.RESET}")
+            
+            # Use the timeout wrapper with a configurable timeout
+            # This ensures no single citation can hang the entire process
+            future = executor.submit(
+                with_timeout,
+                process_citation, 
+                citation_url,
+                question_context,
+                master_folder,
+                i,
+                len(prioritized_citation_map),
+                f"[Refs: {ref_count}]",
+                timeout=CITATION_TIMEOUT  # Pass timeout as a keyword argument
+            )
+            futures[future] = (i, citation_url, ref_count)
+            
+        # Collect results as they complete
+        for future in as_completed(futures):
+            i, citation_url, ref_count = futures[future]
+            try:
+                result = future.result()
+                citation_results.append(result)
+                
+                # Update counters based on result
+                if result.get("success", False):
+                    successful_citations += 1
+                    success_indicator = Colors.GREEN + "✓"
+                else:
+                    failed_citations += 1
+                    success_indicator = Colors.RED + "✗"
+                    
+                    # Check if it was a timeout
+                    if result.get("error_type") == "Timeout":
+                        timeout_citations += 1
+                
+                # Update progress bar
+                update_progress()
+                
+                # Print detailed result
+                safe_print(f"\n{success_indicator} Citation {i}/{len(prioritized_citation_map)} complete: {citation_url[:60]}... (Referenced by {ref_count} questions){Colors.RESET}")
+                
+                # Print error details if failed
+                if not result.get("success", False):
+                    error_msg = result.get("error", "Unknown error")
+                    safe_print(f"{Colors.RED}  ↳ Error: {error_msg}{Colors.RESET}")
+                    
+            except Exception as e:
+                failed_citations += 1
+                citation_results.append({
+                    "citation_id": i,
+                    "url": citation_url,
+                    "success": False,
+                    "content": f"# Error Processing Citation\n\n**Error**: {str(e)}",
+                    "error": str(e)
+                })
+                
+                # Update progress bar
+                update_progress()
+                
+                # Print error
+                safe_print(f"\n{Colors.RED}✗ Citation {i}/{len(prioritized_citation_map)} failed: {citation_url[:60]}... (Referenced by {ref_count} questions){Colors.RESET}")
+                safe_print(f"{Colors.RED}  ↳ Error: {str(e)}{Colors.RESET}")
+    
+    # Print final newline after progress bar
+    print()
+    
+    # Count successful citations
+    safe_print(f"\n{Colors.BOLD}{Colors.GREEN}Citation processing complete: Successfully processed {successful_citations} out of {len(prioritized_citation_map)} citations.{Colors.RESET}")
+    
+    # Print detailed statistics
+    safe_print(f"{Colors.CYAN}Citation processing statistics:{Colors.RESET}")
+    safe_print(f"{Colors.CYAN}- Successful: {successful_citations} ({successful_citations/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
+    safe_print(f"{Colors.CYAN}- Failed: {failed_citations} ({failed_citations/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
+    safe_print(f"{Colors.CYAN}  - Timeouts: {timeout_citations} ({timeout_citations/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
+    safe_print(f"{Colors.CYAN}  - Other errors: {failed_citations - timeout_citations} ({(failed_citations - timeout_citations)/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
+    
+    return citation_results
 
 def process_files_with_openai(master_folder, project_data):
     """
@@ -1782,6 +2151,9 @@ def main():
     - Topic mode: Generate questions based on a topic, perspective, and depth
     - Interactive mode: Prompt for topic, perspective, and depth when run without arguments
     """
+    # Declare global variables
+    global ENABLE_OPENAI_INTEGRATION
+    
     # Create a unique ID for this research project right at the beginning
     # to ensure it's always available regardless of code path
     project_id = str(uuid.uuid4())
@@ -1807,12 +2179,68 @@ def main():
     
     # OpenAI integration args
     parser.add_argument("--openai-integration", "-ai", choices=["enable", "disable"], help="Enable or disable OpenAI file processing (default: from .env)")
+    
+    # New args for existing project and adding questions
+    parser.add_argument("--existing-project", "-ep", help="ID of an existing project to process with OpenAI integration or add questions to")
+    parser.add_argument("--add-questions", "-aq", action="store_true", help="Add questions to an existing project (requires --existing-project)")
+    
     args = parser.parse_args()
     
     # Override OpenAI integration setting from command line if provided
     if args.openai_integration:
-        global ENABLE_OPENAI_INTEGRATION
         ENABLE_OPENAI_INTEGRATION = args.openai_integration == "enable"
+    
+    # Handle existing project processing
+    if args.existing_project:
+        project_data = get_project_by_id(args.existing_project)
+        if not project_data:
+            safe_print(f"{Colors.RED}Project with ID {args.existing_project} not found. Exiting.{Colors.RESET}")
+            return None
+            
+        if args.add_questions:
+            # Adding questions to existing project
+            if not args.questions:
+                safe_print(f"{Colors.RED}No questions provided. Use --questions option to specify questions or a file containing questions. Exiting.{Colors.RESET}")
+                return None
+                
+            # Load questions (reuse existing code for loading questions from args.questions)
+            questions = []
+            if len(args.questions) == 1 and os.path.isfile(args.questions[0]):
+                # Questions from file
+                with open(args.questions[0], "r", encoding="utf-8") as f:
+                    questions = [line.strip() for line in f.readlines() if line.strip()]
+                safe_print(f"{Colors.GREEN}Loaded {len(questions)} questions from {args.questions[0]}{Colors.RESET}")
+            else:
+                # Questions from command line
+                questions = args.questions
+                
+            if not questions:
+                safe_print(f"{Colors.RED}No valid questions found. Exiting.{Colors.RESET}")
+                return None
+                
+            # Add questions to existing project
+            return add_questions_to_project(project_data, questions, args)
+        else:
+            # Process existing project with OpenAI integration
+            master_folder = get_project_folder(project_data)
+            if not master_folder:
+                safe_print(f"{Colors.RED}Project folder not found for project {args.existing_project}. Exiting.{Colors.RESET}")
+                return None
+                
+            # Enable OpenAI integration for this operation
+            old_setting = ENABLE_OPENAI_INTEGRATION
+            ENABLE_OPENAI_INTEGRATION = True
+            
+            safe_print(f"{Colors.BOLD}{Colors.CYAN}Processing existing project with OpenAI integration{Colors.RESET}")
+            safe_print(f"{Colors.CYAN}Project ID: {args.existing_project}{Colors.RESET}")
+            safe_print(f"{Colors.CYAN}Project folder: {master_folder}{Colors.RESET}")
+            
+            project_data = process_files_with_openai(master_folder, project_data)
+            
+            # Restore original setting
+            ENABLE_OPENAI_INTEGRATION = old_setting
+            
+            return project_data
     
     # Determine which mode we're operating in
     questions = []
@@ -1855,84 +2283,208 @@ def main():
     else:
         # Interactive mode - prompt for inputs
         safe_print(f"{Colors.BOLD}{Colors.BLUE}Welcome to the Research Orchestrator{Colors.RESET}")
-        safe_print(f"{Colors.BLUE}Please provide the following information:{Colors.RESET}")
+        safe_print(f"{Colors.BLUE}Please select an option:{Colors.RESET}")
+        safe_print(f"{Colors.CYAN}1. Create a new research project{Colors.RESET}")
+        safe_print(f"{Colors.CYAN}2. Add questions to an existing project{Colors.RESET}")
+        safe_print(f"{Colors.CYAN}3. Process an existing project with OpenAI integration{Colors.RESET}")
         
-        # Prompt for topic
-        topic = input(f"{Colors.CYAN}Enter research topic: {Colors.RESET}").strip()
-        if not topic:
-            safe_print(f"{Colors.RED}Error: Topic is required.{Colors.RESET}")
-            return
-
-        # Prompt for perspective
-        perspective = input(f"{Colors.CYAN}Enter professional perspective (or press Enter for 'Researcher'): {Colors.RESET}").strip()
-        if not perspective:
-            perspective = "Researcher"
-            safe_print(f"{Colors.YELLOW}Using default perspective: {perspective}{Colors.RESET}")
-
-        # Prompt for depth
-        depth_input = input(f"{Colors.CYAN}Enter number of questions to generate (or press Enter for 5): {Colors.RESET}").strip()
-        try:
-            depth = int(depth_input) if depth_input else 5
-            if depth < 1:
-                safe_print(f"{Colors.RED}Error: Depth must be at least 1. Using default of 5.{Colors.RESET}")
-                depth = 5
-            elif depth > 50:
-                safe_print(f"{Colors.YELLOW}Warning: Large number of questions requested. This may take a long time.{Colors.RESET}")
-        except ValueError:
-            safe_print(f"{Colors.RED}Invalid number. Using default of 5.{Colors.RESET}")
-            depth = 5
+        option = input(f"{Colors.CYAN}Enter your choice (1-3): {Colors.RESET}").strip()
+        
+        if option == "1":
+            # Create a new research project - original interactive mode
+            safe_print(f"{Colors.BLUE}Creating a new research project. Please provide the following information:{Colors.RESET}")
             
-        # Prompt for max workers
-        workers_input = input(f"{Colors.CYAN}Enter maximum number of worker threads (or press Enter for automatic): {Colors.RESET}").strip()
-        if workers_input:
+            # Prompt for topic
+            topic = input(f"{Colors.CYAN}Enter research topic: {Colors.RESET}").strip()
+            if not topic:
+                safe_print(f"{Colors.RED}Error: Topic is required.{Colors.RESET}")
+                return
+
+            # Prompt for perspective
+            perspective = input(f"{Colors.CYAN}Enter professional perspective (or press Enter for 'Researcher'): {Colors.RESET}").strip()
+            if not perspective:
+                perspective = "Researcher"
+                safe_print(f"{Colors.YELLOW}Using default perspective: {perspective}{Colors.RESET}")
+
+            # Prompt for depth
+            depth_input = input(f"{Colors.CYAN}Enter number of questions to generate (or press Enter for 5): {Colors.RESET}").strip()
             try:
-                args.max_workers = int(workers_input)
-                if args.max_workers < 1:
-                    safe_print(f"{Colors.RED}Error: Workers must be at least 1. Using automatic calculation.{Colors.RESET}")
-                    args.max_workers = None
+                depth = int(depth_input) if depth_input else 5
+                if depth < 1:
+                    safe_print(f"{Colors.RED}Error: Depth must be at least 1. Using default of 5.{Colors.RESET}")
+                    depth = 5
+                elif depth > 50:
+                    safe_print(f"{Colors.YELLOW}Warning: Large number of questions requested. This may take a long time.{Colors.RESET}")
             except ValueError:
-                safe_print(f"{Colors.RED}Invalid number. Using automatic calculation.{Colors.RESET}")
-        
-        # Prompt for max citations
-        citations_input = input(f"{Colors.CYAN}Enter maximum number of citations to process (or press Enter for 50): {Colors.RESET}").strip()
-        if citations_input:
+                safe_print(f"{Colors.RED}Invalid number. Using default of 5.{Colors.RESET}")
+                depth = 5
+                
+            # Prompt for max workers
+            workers_input = input(f"{Colors.CYAN}Enter maximum number of worker threads (or press Enter for automatic): {Colors.RESET}").strip()
+            if workers_input:
+                try:
+                    args.max_workers = int(workers_input)
+                    if args.max_workers < 1:
+                        safe_print(f"{Colors.RED}Error: Workers must be at least 1. Using automatic calculation.{Colors.RESET}")
+                        args.max_workers = None
+                except ValueError:
+                    safe_print(f"{Colors.RED}Invalid number. Using automatic calculation.{Colors.RESET}")
+            
+            # Prompt for max citations
+            citations_input = input(f"{Colors.CYAN}Enter maximum number of citations to process (or press Enter for 50): {Colors.RESET}").strip()
+            if citations_input:
+                try:
+                    args.max_citations = int(citations_input)
+                    if args.max_citations < 1:
+                        safe_print(f"{Colors.RED}Error: Max citations must be at least 1. Using default of 50.{Colors.RESET}")
+                        args.max_citations = 50
+                except ValueError:
+                    safe_print(f"{Colors.RED}Invalid number. Using default of 50.{Colors.RESET}")
+            
+            # Generate questions using the provided inputs
+            safe_print(f"{Colors.BOLD}{Colors.BLUE}Generating questions for topic: {topic}{Colors.RESET}")
+            questions = generate_research_questions(topic, perspective, depth)
+            if not questions:
+                safe_print(f"{Colors.RED}Failed to generate questions for topic. Exiting.{Colors.RESET}")
+                # Create an empty project tracking entry with failure status
+                project_data = {
+                    "id": project_id,
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "parameters": {
+                        "topic": topic,
+                        "perspective": perspective,
+                        "depth": depth,
+                        "questions": []
+                    },
+                    "status": "failed",
+                    "reason": "Failed to generate questions for topic"
+                }
+                add_project_to_tracking(project_data)
+                return project_data
+            
+            # Limit to the requested depth (in case API returned more)
+            questions = questions[:depth]
+            safe_print(f"{Colors.BOLD}{Colors.GREEN}Generated {len(questions)} questions for topic{Colors.RESET}")
+            
+            # Save the values to args for later use
+            args.topic = topic
+            args.perspective = perspective
+            args.depth = depth
+            
+        elif option == "2":
+            # Add questions to an existing project
+            safe_print(f"{Colors.BLUE}Adding questions to an existing project.{Colors.RESET}")
+            
+            # Load existing projects
+            tracking_data = load_project_tracking()
+            projects = tracking_data.get("projects", [])
+            
+            if not projects:
+                safe_print(f"{Colors.RED}No existing projects found. Please create a new project first.{Colors.RESET}")
+                return
+            
+            # Display available projects
+            safe_print(f"{Colors.CYAN}Available projects:{Colors.RESET}")
+            for i, project in enumerate(projects, 1):
+                project_id = project.get("id", "Unknown")
+                topic = project.get("parameters", {}).get("topic", "Research Project")
+                timestamp = project.get("timestamp", "").split("T")[0]
+                question_count = len(project.get("parameters", {}).get("questions", []))
+                safe_print(f"{Colors.CYAN}{i}. {topic} ({timestamp}) - {question_count} questions - ID: {project_id}{Colors.RESET}")
+            
+            # Prompt for project selection
+            project_input = input(f"{Colors.CYAN}Enter project number to select: {Colors.RESET}").strip()
             try:
-                args.max_citations = int(citations_input)
-                if args.max_citations < 1:
-                    safe_print(f"{Colors.RED}Error: Max citations must be at least 1. Using default of 50.{Colors.RESET}")
-                    args.max_citations = 50
+                project_index = int(project_input) - 1
+                if project_index < 0 or project_index >= len(projects):
+                    safe_print(f"{Colors.RED}Invalid project number. Exiting.{Colors.RESET}")
+                    return
+                
+                selected_project = projects[project_index]
+                project_id = selected_project.get("id")
+                
+                # Prompt for questions file
+                questions_file = input(f"{Colors.CYAN}Enter path to file containing questions (one per line): {Colors.RESET}").strip()
+                if not questions_file or not os.path.isfile(questions_file):
+                    safe_print(f"{Colors.RED}Invalid file path. Exiting.{Colors.RESET}")
+                    return
+                
+                # Load questions from file
+                with open(questions_file, "r", encoding="utf-8") as f:
+                    questions = [line.strip() for line in f.readlines() if line.strip()]
+                
+                if not questions:
+                    safe_print(f"{Colors.RED}No valid questions found in file. Exiting.{Colors.RESET}")
+                    return
+                
+                safe_print(f"{Colors.GREEN}Loaded {len(questions)} questions from {questions_file}{Colors.RESET}")
+                
+                # Add questions to the selected project
+                return add_questions_to_project(selected_project, questions, args)
+                
             except ValueError:
-                safe_print(f"{Colors.RED}Invalid number. Using default of 50.{Colors.RESET}")
-        
-        # Generate questions using the provided inputs
-        safe_print(f"{Colors.BOLD}{Colors.BLUE}Generating questions for topic: {topic}{Colors.RESET}")
-        questions = generate_research_questions(topic, perspective, depth)
-        if not questions:
-            safe_print(f"{Colors.RED}Failed to generate questions for topic. Exiting.{Colors.RESET}")
-            # Create an empty project tracking entry with failure status
-            project_data = {
-                "id": project_id,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "parameters": {
-                    "topic": topic,
-                    "perspective": perspective,
-                    "depth": depth,
-                    "questions": []
-                },
-                "status": "failed",
-                "reason": "Failed to generate questions for topic"
-            }
-            add_project_to_tracking(project_data)
-            return project_data
-        
-        # Limit to the requested depth (in case API returned more)
-        questions = questions[:depth]
-        safe_print(f"{Colors.BOLD}{Colors.GREEN}Generated {len(questions)} questions for topic{Colors.RESET}")
-        
-        # Save the values to args for later use
-        args.topic = topic
-        args.perspective = perspective
-        args.depth = depth
+                safe_print(f"{Colors.RED}Invalid input. Exiting.{Colors.RESET}")
+                return
+                
+        elif option == "3":
+            # Process an existing project with OpenAI integration
+            safe_print(f"{Colors.BLUE}Processing an existing project with OpenAI integration.{Colors.RESET}")
+            
+            # Load existing projects
+            tracking_data = load_project_tracking()
+            projects = tracking_data.get("projects", [])
+            
+            if not projects:
+                safe_print(f"{Colors.RED}No existing projects found. Please create a new project first.{Colors.RESET}")
+                return
+            
+            # Display available projects
+            safe_print(f"{Colors.CYAN}Available projects:{Colors.RESET}")
+            for i, project in enumerate(projects, 1):
+                project_id = project.get("id", "Unknown")
+                topic = project.get("parameters", {}).get("topic", "Research Project")
+                timestamp = project.get("timestamp", "").split("T")[0]
+                openai_status = project.get("openai_integration", {}).get("status", "not processed")
+                safe_print(f"{Colors.CYAN}{i}. {topic} ({timestamp}) - OpenAI: {openai_status} - ID: {project_id}{Colors.RESET}")
+            
+            # Prompt for project selection
+            project_input = input(f"{Colors.CYAN}Enter project number to select: {Colors.RESET}").strip()
+            try:
+                project_index = int(project_input) - 1
+                if project_index < 0 or project_index >= len(projects):
+                    safe_print(f"{Colors.RED}Invalid project number. Exiting.{Colors.RESET}")
+                    return
+                
+                selected_project = projects[project_index]
+                project_id = selected_project.get("id")
+                
+                # Get the project folder
+                master_folder = get_project_folder(selected_project)
+                if not master_folder:
+                    safe_print(f"{Colors.RED}Project folder not found. Exiting.{Colors.RESET}")
+                    return
+                
+                # Enable OpenAI integration for this operation
+                old_setting = ENABLE_OPENAI_INTEGRATION
+                ENABLE_OPENAI_INTEGRATION = True
+                
+                safe_print(f"{Colors.BOLD}{Colors.CYAN}Processing project with OpenAI integration{Colors.RESET}")
+                safe_print(f"{Colors.CYAN}Project ID: {project_id}{Colors.RESET}")
+                safe_print(f"{Colors.CYAN}Project folder: {master_folder}{Colors.RESET}")
+                
+                project_data = process_files_with_openai(master_folder, selected_project)
+                
+                # Restore original setting
+                ENABLE_OPENAI_INTEGRATION = old_setting
+                
+                return project_data
+                
+            except ValueError:
+                safe_print(f"{Colors.RED}Invalid input. Exiting.{Colors.RESET}")
+                return
+        else:
+            safe_print(f"{Colors.RED}Invalid option. Exiting.{Colors.RESET}")
+            return
 
     if not questions:
         safe_print(f"{Colors.RED}No research questions provided. Exiting.{Colors.RESET}")
@@ -2049,6 +2601,9 @@ def main():
     # Add project to tracking file
     add_project_to_tracking(project_data)
     
+    # Initialize counter for successful questions
+    successful_questions = 0
+    
     ########## PHASE 1: Process all questions ##########
     safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PHASE 1: PROCESSING ALL QUESTIONS ========{Colors.RESET}")
     
@@ -2056,224 +2611,92 @@ def main():
     all_question_results = []  # Store results as (success_flag, research_response, citations)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Create a future for each question
-        futures = []
+        futures = {}
         for i, question in enumerate(questions, 1):
             # Stagger the thread starts to avoid API rate limits
             if i > 1 and THREAD_STAGGER_DELAY > 0:
                 time.sleep(THREAD_STAGGER_DELAY)
-                
-            # Pass topic and perspective if available
-            if args.topic:
-                future = executor.submit(research_pipeline, question, master_folder, i, len(questions), args.topic, args.perspective)
-            else:
-                future = executor.submit(research_pipeline, question, master_folder, i, len(questions))
-                
-            futures.append(future)
             
+            future = executor.submit(
+                research_pipeline,
+                question,
+                master_folder,
+                i,
+                len(questions)
+            )
+            futures[future] = (i, question)
+        
         # Collect results as they complete
-        for future in futures:
-            result = future.result()  # This blocks until the result is available
-            all_question_results.append(result)
-            
-    # Count successful questions
-    successful_questions = sum(1 for success, _, _ in all_question_results if success)
-    safe_print(f"\n{Colors.BOLD}{Colors.GREEN}Phase 1 complete: Successfully processed {successful_questions} out of {len(questions)} questions.{Colors.RESET}")
+        for future in as_completed(futures):
+            i, question = futures[future]
+            try:
+                success, research_response, citations = future.result()
+                all_question_results.append((success, research_response, citations))
+                
+                if success:
+                    successful_questions += 1
+                    
+            except Exception as e:
+                safe_print(f"{Colors.RED}Error processing question {i}: {str(e)}{Colors.RESET}")
+                all_question_results.append((False, None, []))
     
-    ########## PHASE 2: Extract and deduplicate citations ##########
-    safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PHASE 2: EXTRACTING AND DEDUPLICATING CITATIONS ========{Colors.RESET}")
+    # Extract and deduplicate citations from all questions
+    safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== EXTRACTING CITATIONS FROM QUESTIONS ========{Colors.RESET}")
+    citation_map, unique_citation_count = extract_and_deduplicate_citations(all_question_results)
     
-    # Extract and deduplicate citations
-    citation_map = extract_and_deduplicate_citations(all_question_results)
-    unique_citation_count = len(citation_map)
-    total_citation_references = sum(len(questions) for questions in citation_map.values())
-    
-    safe_print(f"{Colors.GREEN}Found {unique_citation_count} unique citations across {successful_questions} questions.{Colors.RESET}")
-    safe_print(f"{Colors.GREEN}Total citation references: {total_citation_references} (avg {total_citation_references/max(1, successful_questions):.1f} per question){Colors.RESET}")
-    
-    # Prioritize citations - limit to the top N most referenced ones
-    prioritized_citation_map, skipped_count = prioritize_citations(citation_map, args.max_citations)
-    
-    if skipped_count > 0:
-        safe_print(f"{Colors.YELLOW}Limiting to top {args.max_citations} most referenced citations. Skipping {skipped_count} less referenced citations.{Colors.RESET}")
-    
-    if len(prioritized_citation_map) == 0:
+    # Process citations if there are any
+    if citation_map:
+        # Prioritize citations based on reference count
+        prioritized_citation_map, skipped_count = prioritize_citations(citation_map, args.max_citations)
+        
+        if skipped_count > 0:
+            safe_print(f"{Colors.YELLOW}Skipping {skipped_count} less referenced citations to stay within limit of {args.max_citations}{Colors.RESET}")
+        
+        # Process each unique citation
+        safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PROCESSING CITATIONS ========{Colors.RESET}")
+        citation_results = process_citations(prioritized_citation_map, master_folder, max_workers, THREAD_STAGGER_DELAY)
+        
+        # Create indexes
+        master_index_path = create_master_index(master_folder, questions, all_question_results)
+        citation_index_path = create_citation_index(master_folder, citation_map, citation_results, skipped_count)
+        
+        # Consolidate summaries
+        safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== CONSOLIDATING SUMMARIES ========{Colors.RESET}")
+        consolidate_summary_files(master_folder, "executive_summary", "consolidated_executive_summaries.md", "Consolidated Executive Summaries")
+        consolidate_summary_files(master_folder, "research_summary", "consolidated_research_summaries.md", "Consolidated Research Summaries")
+        
+        # Move master index and citation index to summaries folder
+        move_file(master_index_path, os.path.join(master_folder, "summaries"))
+        move_file(citation_index_path, os.path.join(master_folder, "summaries"))
+    else:
         safe_print(f"{Colors.YELLOW}No citations found. Skipping citation processing phase.{Colors.RESET}")
         # Create the master index even if there are no citations
         master_index_path = create_master_index(master_folder, questions, all_question_results)
         
         # Consolidate summary files and move master index
-        safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PHASE 4: CONSOLIDATING SUMMARIES ========{Colors.RESET}")
+        safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== CONSOLIDATING SUMMARIES ========{Colors.RESET}")
         consolidate_summary_files(master_folder, "executive_summary", "consolidated_executive_summaries.md", "Consolidated Executive Summaries")
         consolidate_summary_files(master_folder, "research_summary", "consolidated_research_summaries.md", "Consolidated Research Summaries")
         move_file(master_index_path, os.path.join(master_folder, "summaries"))
-        return project_data
-        
-    ########## PHASE 3: Process each unique citation ##########
-    safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PHASE 3: PROCESSING UNIQUE CITATIONS ========{Colors.RESET}")
-    safe_print(f"{Colors.CYAN}Processing {len(prioritized_citation_map)} prioritized citations...{Colors.RESET}")
     
-    # Debug output - print the prioritized_citation_map
-    safe_print(f"{Colors.YELLOW}Debug - Prioritized citation map:{Colors.RESET}")
-    for i, (citation_url, question_context) in enumerate(prioritized_citation_map.items(), 1):
-        safe_print(f"{Colors.YELLOW}  Citation {i}: {citation_url} (type: {type(citation_url)}){Colors.RESET}")
-    
-    # Display citation processing parameters
-    safe_print(f"{Colors.MAGENTA}Citation timeout: {CITATION_TIMEOUT} seconds per citation{Colors.RESET}")
-    safe_print(f"{Colors.MAGENTA}Worker threads: {max_workers}{Colors.RESET}")
-    safe_print(f"{Colors.MAGENTA}Thread stagger delay: {THREAD_STAGGER_DELAY} seconds{Colors.RESET}")
-    
-    # Process citations in parallel
-    citation_results = []
-    successful_citations = 0
-    failed_citations = 0
-    timeout_citations = 0
-    
-    # Create a progress tracking function
-    def update_progress():
-        total = len(prioritized_citation_map)
-        completed = successful_citations + failed_citations
-        if total == 0:
-            return
-        
-        percent = int((completed / total) * 100)
-        bar_length = 40
-        filled_length = int(bar_length * completed / total)
-        bar = '█' * filled_length + '░' * (bar_length - filled_length)
-        
-        # Clear the line and print the progress bar
-        sys.stdout.write('\r')
-        sys.stdout.write(f"{Colors.CYAN}Progress: [{bar}] {percent}% | ✅ {successful_citations} | ❌ {failed_citations} | ⏱️ {timeout_citations} | Total: {completed}/{total}{Colors.RESET}")
-        sys.stdout.flush()
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Create a future for each unique citation
-        futures = {}
-        for i, (citation_url, question_context) in enumerate(prioritized_citation_map.items(), 1):
-            # Stagger the thread starts to avoid API rate limits
-            if i > 1 and THREAD_STAGGER_DELAY > 0:
-                time.sleep(THREAD_STAGGER_DELAY)
-                
-            # For log message, show citation rank by reference count
-            ref_count = len(question_context)
-            
-            # Debug output - print the citation URL and its type
-            safe_print(f"{Colors.YELLOW}Debug - Before with_timeout - Citation {i}: {citation_url} (type: {type(citation_url)}){Colors.RESET}")
-            
-            # Use the timeout wrapper with a configurable timeout
-            # This ensures no single citation can hang the entire process
-            future = executor.submit(
-                with_timeout,
-                process_citation, 
-                citation_url,
-                question_context,
-                master_folder,
-                i,
-                len(prioritized_citation_map),
-                f"[Refs: {ref_count}]",
-                timeout=CITATION_TIMEOUT  # Pass timeout as a keyword argument
-            )
-            futures[future] = (i, citation_url, ref_count)
-            
-        # Collect results as they complete
-        for future in as_completed(futures):
-            i, citation_url, ref_count = futures[future]
-            try:
-                result = future.result()
-                citation_results.append(result)
-                
-                # Update counters based on result
-                if result.get("success", False):
-                    successful_citations += 1
-                    success_indicator = Colors.GREEN + "✓"
-                else:
-                    failed_citations += 1
-                    success_indicator = Colors.RED + "✗"
-                    
-                    # Check if it was a timeout
-                    if result.get("error_type") == "Timeout":
-                        timeout_citations += 1
-                
-                # Update progress bar
-                update_progress()
-                
-                # Print detailed result
-                safe_print(f"\n{success_indicator} Citation {i}/{len(prioritized_citation_map)} complete: {citation_url[:60]}... (Referenced by {ref_count} questions){Colors.RESET}")
-                
-                # Print error details if failed
-                if not result.get("success", False):
-                    error_msg = result.get("error", "Unknown error")
-                    safe_print(f"{Colors.RED}  ↳ Error: {error_msg}{Colors.RESET}")
-                    
-            except Exception as e:
-                failed_citations += 1
-                citation_results.append({
-                    "citation_id": i,
-                    "url": citation_url,
-                    "success": False,
-                    "content": f"# Error Processing Citation\n\n**Error**: {str(e)}",
-                    "error": str(e)
-                })
-                
-                # Update progress bar
-                update_progress()
-                
-                # Print error
-                safe_print(f"\n{Colors.RED}✗ Citation {i}/{len(prioritized_citation_map)} failed: {citation_url[:60]}... (Referenced by {ref_count} questions){Colors.RESET}")
-                safe_print(f"{Colors.RED}  ↳ Error: {str(e)}{Colors.RESET}")
-    
-    # Print final newline after progress bar
-    print()
-    
-    # Count successful citations
-    safe_print(f"\n{Colors.BOLD}{Colors.GREEN}Phase 3 complete: Successfully processed {successful_citations} out of {len(prioritized_citation_map)} citations.{Colors.RESET}")
-    
-    # Print detailed statistics
-    safe_print(f"{Colors.CYAN}Citation processing statistics:{Colors.RESET}")
-    safe_print(f"{Colors.CYAN}- Successful: {successful_citations} ({successful_citations/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
-    safe_print(f"{Colors.CYAN}- Failed: {failed_citations} ({failed_citations/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
-    safe_print(f"{Colors.CYAN}  - Timeouts: {timeout_citations} ({timeout_citations/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
-    safe_print(f"{Colors.CYAN}  - Other errors: {failed_citations - timeout_citations} ({(failed_citations - timeout_citations)/max(1, len(prioritized_citation_map))*100:.1f}%){Colors.RESET}")
-    
-    # Create indexes - pass the original citation_map to create_citation_index
-    # so it can show all citations (including skipped ones)
-    master_index_path = create_master_index(master_folder, questions, all_question_results)
-    citation_index_path = create_citation_index(master_folder, citation_map, citation_results, skipped_count)
-    
-    ########## PHASE 4: Consolidate summaries ##########
-    safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PHASE 4: CONSOLIDATING SUMMARIES ========{Colors.RESET}")
-    
-    # Consolidate executive summaries and research summaries
-    exec_summary_path = consolidate_summary_files(master_folder, "executive_summary", "consolidated_executive_summaries.md", "Consolidated Executive Summaries")
-    research_summary_path = consolidate_summary_files(master_folder, "research_summary", "consolidated_research_summaries.md", "Consolidated Research Summaries")
-    
-    # Move master index and citation index to summaries folder
-    move_file(master_index_path, os.path.join(master_folder, "summaries"))
-    move_file(citation_index_path, os.path.join(master_folder, "summaries"))
-    
-    # Update README to mention consolidated files
-    if args.topic and os.path.exists(readme_path):
-        with open(readme_path, "a", encoding="utf-8") as f:
-            f.write("\n## Consolidated Files\n\n")
-            f.write("For convenience, the following consolidated files are available in the `summaries/` directory:\n\n")
-            f.write("- `consolidated_executive_summaries.md`: All executive summaries in one file\n")
-            f.write("- `consolidated_research_summaries.md`: All research summaries in one file\n")
-            f.write("- `master_index.md`: Index of all questions and their research outputs\n")
-            f.write("- `citation_index.md`: Index of all citations and their references\n")
-    
-    ########## PHASE 5: OpenAI File Processing (Optional) ##########
-    # Only run if OpenAI integration is enabled
+    # Process files with OpenAI if enabled
     if ENABLE_OPENAI_INTEGRATION:
         project_data = process_files_with_openai(master_folder, project_data)
+    
+    # Update project status to completed
+    project_data["status"] = "completed"
+    update_project_in_tracking(project_id, {"status": "completed"})
     
     # Output summary
     safe_print(f"\n{Colors.BOLD}{Colors.GREEN}Research complete at {time.strftime('%Y-%m-%d %H:%M:%S')}{Colors.RESET}")
     safe_print(f"{Colors.CYAN}Summary:{Colors.RESET}")
     safe_print(f"{Colors.CYAN}- Questions: {successful_questions}/{len(questions)} successfully processed{Colors.RESET}")
     safe_print(f"{Colors.CYAN}- Citations: Found {unique_citation_count} unique citations{Colors.RESET}")
-    if skipped_count > 0:
-        safe_print(f"{Colors.CYAN}- Citation Processing: {successful_citations}/{len(prioritized_citation_map)} prioritized citations processed, {skipped_count} less relevant citations skipped{Colors.RESET}")
-    else:
-        safe_print(f"{Colors.CYAN}- Citation Processing: {successful_citations}/{len(prioritized_citation_map)} citations processed{Colors.RESET}")
+    if citation_map:
+        if skipped_count > 0:
+            safe_print(f"{Colors.CYAN}- Citation Processing: {len(citation_results)}/{len(prioritized_citation_map)} prioritized citations processed, {skipped_count} less relevant citations skipped{Colors.RESET}")
+        else:
+            safe_print(f"{Colors.CYAN}- Citation Processing: {len(citation_results)}/{len(prioritized_citation_map)} citations processed{Colors.RESET}")
     safe_print(f"{Colors.CYAN}- Consolidated Files: Executive summaries, research summaries{Colors.RESET}")
     safe_print(f"{Colors.CYAN}- Output directory: {master_folder}{Colors.RESET}")
     safe_print(f"{Colors.CYAN}- Summaries directory: {os.path.join(master_folder, 'summaries')}{Colors.RESET}")
@@ -2287,10 +2710,6 @@ def main():
         
         safe_print(f"{Colors.CYAN}- OpenAI Integration: {total_files} files uploaded{Colors.RESET}")
         safe_print(f"{Colors.CYAN}- Vector Store: {vs_info.get('name')} (ID: {vs_info.get('id')}){Colors.RESET}")
-    
-    # Update project status to completed
-    project_data["status"] = "completed"
-    update_project_in_tracking(project_id, {"status": "completed"})
     
     return project_data
 

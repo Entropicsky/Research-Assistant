@@ -358,3 +358,55 @@
 - [ ] Add more comprehensive documentation
 - [ ] Create test suite
 - [ ] Performance optimizations 
+
+## Command-Line Enhancement Features
+
+### New Command-Line Options
+- [x] Implement `--existing-project` option to specify project ID
+  - [x] Create `get_project_by_id` function to retrieve project data
+  - [x] Modify OpenAI integration to work with existing projects
+  - [x] Add validation for project ID existence
+  - [x] Handle error cases for invalid project IDs
+
+- [x] Implement `--add-questions` option for existing projects
+  - [x] Create function to add questions to existing project
+  - [x] Update project tracking with new questions
+  - [x] Ensure proper folder structure updates
+  - [x] Handle OpenAI integration for new questions
+
+- [x] Implement interactive terminal interface
+  - [x] Add option to create new project or add to existing
+  - [x] Create project selection interface for existing projects
+  - [x] Implement questions file input for adding to projects
+  - [x] Ensure backward compatibility with existing modes
+
+### Testing and Validation
+- [x] Test `--existing-project` with OpenAI integration
+- [x] Test `--add-questions` with various question formats
+- [x] Test interactive terminal interface
+- [x] Verify compatibility with Streamlit website
+- [x] Create comprehensive error handling
+
+### Documentation
+- [x] Update README with new command-line options
+- [x] Add examples for each new feature
+- [x] Document project ID location and format
+- [x] Create usage examples for common scenarios 
+
+## Recent Fixes (March 15, 2024)
+
+- [x] Fix incomplete implementation in main function
+  - [x] Restore original question processing phase
+  - [x] Fix citation processing phase
+  - [x] Initialize successful_questions counter
+  - [x] Restore complete implementation of file end
+
+- [x] Enhance error handling
+  - [x] Improve citation processing with proper timeout handling
+  - [x] Add project data validation
+  - [x] Handle OpenAI integration errors
+
+- [x] Fix code structure and organization
+  - [x] Ensure proper function calls and parameter passing
+  - [x] Maintain consistent variable naming
+  - [x] Follow established code patterns 

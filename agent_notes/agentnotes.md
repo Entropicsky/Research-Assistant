@@ -821,41 +821,82 @@ Changes made:
 
 Note: There is still a limitation with certain websites. For example, YouTube URLs are no longer supported by the Firecrawl service. The error message indicates that you need to reach out to help@firecrawl.com to activate support for these sites on your account. 
 
-# Research Assistant Agent Notes
+## Command-Line Enhancement Features (March 14, 2024)
 
-## Project Overview
-This project is a Streamlit application that serves as a Research Assistant using OpenAI models. The app allows users to perform research on various topics with integrated vector store search and optional web search capabilities. Users can manage research projects, mark them as active/inactive, and track research progress.
+We're implementing several new command-line features to enhance the research orchestrator:
 
-## Key Components
-- **Streamlit UI**: Provides a web interface for interaction
-- **OpenAI Integration**: Uses OpenAI API for generating responses
-- **Vector Store**: Stores and retrieves relevant research documents
-- **Web Search**: Optional capability to search the web for up-to-date information
-- **Project Management**: Allows users to manage and organize research projects
+### 1. Existing Project Processing
 
-## Technical Details
-- The application uses hardcoded OpenAI models: gpt-4o, gpt-4o-mini, gpt-4.5-preview, o1, and o3-mini
-- Web search functionality is implemented using OpenAI's built-in web search tool
-- Research project details are stored in a JSON file
-- The app provides comprehensive debug information for troubleshooting
+Adding a new `--existing-project` option that allows specifying an existing project by ID to execute OpenAI file upload and vector database steps. This is particularly useful when OpenAI integration was initially disabled.
 
-## User Preferences
-- The user prefers explicit command execution with python3 instead of python
-- Visual feedback for research progress is important
-- The debug panel is useful for monitoring API responses and troubleshooting
-- The app should support both active and inactive project management
+Implementation plan:
+- Create a `get_project_by_id` function to retrieve project data from the tracking file
+- Modify the OpenAI integration functions to work with existing projects
+- Add validation for project ID existence
+- Handle error cases for invalid project IDs
 
-## Development Notes
-- Be careful with OpenAI API calls - `tool_choice` parameter should be set to "auto"
-- When running the app, use `python3 -m streamlit run streamlit_app/app.py`
-- The OpenAI models are now hardcoded rather than dynamically fetched
-- Changes to model selection should update both UI and API handling components
+### 2. Adding Questions to Existing Projects
 
-## GitHub Repository Setup
-We're in the process of setting up a GitHub repository for version control of this project.
+Adding a new `--add-questions` option that allows specifying an existing project by ID and providing a file of questions to add to the existing project.
 
-## Recent Changes
-- Fixed model selection to use hardcoded list
-- Fixed Python command execution to use python3
-- Added progress tracking for research execution
-- Implemented active/inactive project management 
+Implementation plan:
+- Create a function to add questions to an existing project
+- Update project tracking with new questions
+- Ensure proper folder structure updates
+- Handle OpenAI integration for new questions
+
+### 3. Interactive Terminal Interface
+
+Enhancing the interactive mode to start with options to "Create a New Project" or "Add to an Existing Project," with the latter requiring a questions file location.
+
+Implementation plan:
+- Add option to create new project or add to existing
+- Create project selection interface for existing projects
+- Implement questions file input for adding to projects
+- Ensure backward compatibility with existing modes
+
+### 4. Compatibility Considerations
+
+These changes must not break existing functionality, including the Streamlit website. We'll ensure:
+- All existing command-line options continue to work
+- The Streamlit interface remains compatible
+- Error handling is comprehensive
+- Documentation is updated to reflect new features 
+
+## Recent Fixes (March 15, 2024)
+
+We've made several important fixes to the `research_orchestrator.py` file:
+
+### 1. Fixed Incomplete Implementation
+
+Fixed an issue where the main function was incomplete, causing the script to fail during execution. The specific fixes included:
+
+- Restored the original question processing phase with proper ThreadPoolExecutor implementation
+- Fixed the citation processing phase to properly handle citation results
+- Ensured proper initialization of the `successful_questions` counter
+- Restored the complete implementation of the end of the file, including:
+  - Citation extraction and deduplication
+  - Citation prioritization based on reference count
+  - Processing of unique citations
+  - Creation of master and citation indexes
+  - Consolidation of summary files
+  - OpenAI integration (when enabled)
+  - Project status updates
+  - Comprehensive output summary
+
+### 2. Enhanced Error Handling
+
+Improved error handling throughout the script, particularly in:
+- Citation processing with proper timeout handling
+- Project data validation
+- OpenAI integration error cases
+
+### 3. Improved Command-Line Interface
+
+Successfully implemented the planned command-line enhancements:
+- Added support for processing existing projects with OpenAI integration
+- Added functionality to add questions to existing projects
+- Enhanced the interactive terminal interface with project selection
+- Maintained compatibility with existing functionality
+
+These fixes ensure that the research orchestrator functions correctly in all modes of operation, providing a robust tool for research automation with proper error handling and user feedback. 
