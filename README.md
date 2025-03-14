@@ -18,6 +18,7 @@ This project consists of two main components:
    - Allows chatting with existing research projects using OpenAI
    - Provides a form-based interface to initiate new research
    - Offers preview functionality for research questions
+   - Supports adding questions to existing projects
 
 > **Note**: The Streamlit app is currently the recommended way to interact with research projects. There is an experimental Next.js chatbot in the `research_chatbot` folder, but it is not fully supported at this time.
 
@@ -28,7 +29,7 @@ This project consists of two main components:
 - Python 3.8+
 - Required Python packages:
   ```
-  pip install streamlit openai python-dotenv reportlab requests firecrawl
+  pip install -r requirements.txt
   ```
 
 ### Environment Setup
@@ -99,6 +100,8 @@ python research_orchestrator.py --questions questions.txt
 | `--limit` | `-l` | Limit processing to N questions (for testing) | Process all |
 | `--openai-integration` | None | Enable or disable OpenAI integration | "enable" |
 | `--skip-openai-upload` | None | Skip uploading to OpenAI | False |
+| `--existing-project` | None | Specify ID of an existing project to work with | None |
+| `--add-questions` | None | Add new questions to an existing project | None |
 
 ### Example Commands
 
@@ -120,6 +123,15 @@ python research_orchestrator.py --topic "Renewable Energy" --openai-integration 
 
 # Advanced configuration
 python research_orchestrator.py --topic "Space Exploration" --perspective "Astrophysicist" --depth 8 --max-workers 3 --stagger-delay 10 --max-citations 40
+
+# Add to existing project using project ID
+python research_orchestrator.py --existing-project "Quantum_Computing_20240314_103045" --add-questions --questions "What are the limitations of quantum computing?" "How is quantum error correction implemented?"
+
+# Add questions from a file to an existing project
+python research_orchestrator.py --existing-project "AI_Ethics_20240314_152230" --add-questions --questions additional_questions.txt
+
+# Interactive mode (follow the prompts to create new project or add to existing)
+python research_orchestrator.py
 ```
 
 ## Streamlit Research Assistant App
@@ -135,7 +147,7 @@ streamlit run app.py
 
 ### Features
 
-The app consists of three main tabs:
+The app consists of four main tabs:
 
 #### 1. Chat with Projects
 
@@ -155,7 +167,15 @@ The app consists of three main tabs:
   - OpenAI Integration toggle
 - Real-time progress display during research execution
 
-#### 3. Preview Questions
+#### 3. Add Questions to Existing Project
+
+- Select an existing research project to expand
+- Add new questions to the selected project
+- Configure worker threads, citations, and OpenAI integration
+- View real-time progress as questions are processed
+- Seamless integration with the Chat tab (synced project selection)
+
+#### 4. Preview Questions
 
 - Generate sample research questions without starting a full research project
 - Configure topic, perspective, and number of questions
@@ -198,6 +218,34 @@ Research files follow these naming conventions:
    - Fixed citation processing error handling
    - Added better URL validation
 
+### March 15, 2024 Updates:
+
+1. **Command-Line Enhancements**:
+   - Added `--existing-project` option to work with existing research projects
+   - Added `--add-questions` option to expand existing research with new questions
+   - Improved interactive terminal interface with project selection
+   - Enhanced error handling for citation processing and OpenAI integration
+
+### March 18, 2024 Updates:
+
+1. **Streamlit App Improvements**:
+   - Added "Add Questions to Existing Project" tab for expanding research
+   - Fixed UI issues with text and input field visibility
+   - Synchronized project selection between Chat and Add Questions tabs
+   - Enhanced progress tracking and real-time feedback
+
+2. **OpenAI Integration Optimization**:
+   - Improved efficiency by only uploading new files when adding questions to projects
+   - Fixed bug where project metadata (topic, perspective) was being lost during updates
+   - Enhanced file tracking for better resource management
+   - Improved error handling during OpenAI integration
+
+3. **General Improvements**:
+   - Added requirements.txt file for easier installation
+   - Enhanced documentation throughout the codebase
+   - Fixed various bug fixes and stability improvements
+   - Created GitHub repository for project tracking and sharing
+
 ## Troubleshooting
 
 ### Common Issues:
@@ -223,6 +271,10 @@ Research files follow these naming conventions:
 2. **Chat Not Working**:
    - Verify `OPENAI_API_KEY` is set correctly
    - Check that vector store IDs exist in the project data
+
+3. **Text Visibility Issues**:
+   - If text is difficult to read, check for dark mode compatibility issues
+   - The app has been updated to ensure all text is properly visible
 
 ## Contributing
 

@@ -32,8 +32,8 @@ def model_option_card(
         # Using html for the card styling
         st.markdown(f"""
         <div class="{card_class}">
-            <div class="model-name">{model_name}</div>
-            <div class="model-description">{model_desc}</div>
+            <div class="model-name" style="color: #000000;">{model_name}</div>
+            <div class="model-description" style="color: #555555;">{model_desc}</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -155,7 +155,7 @@ def model_settings_panel():
         # Web search toggle with compact styling
         web_enabled = web_search_toggle()
         
-        # Use a small, subtle caption for current settings
-        st.caption(f"Using {current_model} {'+ web search' if web_enabled else ''}")
+        # Use a small, subtle caption for current settings with explicit color
+        st.markdown(f"<div style='color: #444444; font-size: 0.8em;'>Using {current_model} {'+ web search' if web_enabled else ''}</div>", unsafe_allow_html=True)
     
     return current_model, web_enabled 

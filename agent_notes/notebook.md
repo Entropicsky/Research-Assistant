@@ -1268,3 +1268,271 @@ The application requires:
 - Implement user authentication
 - Add export functionality for research results
 - Enhance citation handling and validation
+
+## March 15, 2024: README Documentation Update
+
+Today I updated the README.md file to document the new command-line features we implemented and fixed. The updates include:
+
+1. Added a new "March 15, 2024 Updates" section highlighting:
+   - The `--existing-project` option
+   - The `--add-questions` option
+   - Interactive terminal interface improvements
+   - Enhanced error handling
+
+2. Updated the command-line arguments table to include the new options with descriptions.
+
+3. Added additional example commands demonstrating how to:
+   - Add to an existing project using a project ID
+   - Add questions from a file to an existing project
+   - Use the interactive mode
+
+These documentation updates ensure that users can easily understand and use the new command-line features we've implemented. I've also updated our project tracking files (project_checklist.md and agentnotes.md) to reflect this work.
+
+Key takeaways:
+- Documentation should be kept in sync with code changes
+- Clear examples are essential for users to understand new features
+- Maintaining consistent formatting is important for readability
+- Properly documenting all options helps users discover functionality
+
+## Active Field Implementation
+
+### Current Status
+- The active field is used to determine whether a project should be displayed in the Streamlit app
+- New projects have the active field set to true by default
+- The active field is preserved when updating projects
+- The Streamlit app has a toggle to show/hide inactive projects
+- The Streamlit app has a button to activate/deactivate projects
+
+### Implementation Details
+- In `research_orchestrator.py`, new projects are created with `"active": True` in the project data structure
+- The `add_questions_to_project` function preserves the active status when updating projects
+- The `process_files_with_openai` function preserves the active status when updating projects
+- The `update_project_in_tracking` function is used to update the active field in the tracking file
+- The Streamlit app uses the `filter_available_projects` function to filter projects based on their active status
+- The Streamlit app uses the `update_project_active_status` function to update the active status of projects
+
+### Script to Update All Projects
+We created a script called `update_active_status.py` to update all existing projects to have the active field set to true. The script:
+1. Loads the research_projects.json file
+2. Counts the number of projects with the active field and the number of active projects
+3. Updates all projects to have active=True
+4. Saves the updated data back to the file
+5. Creates a backup of the original file before making changes
+
+### Results
+- Before the update:
+  - Total projects: 27
+  - Projects with active field: 4
+  - Active projects: 0
+- After the update:
+  - Total projects: 27
+  - Projects with active field: 27
+  - Active projects: 27
+
+## Next Steps
+- Ensure that all new projects have the active field set to true by default
+- Update the documentation to explain the purpose and usage of the active field
+- Consider adding a command-line option to set the active field when creating a new project
+- Add tests to verify that the active field is correctly handled in all scenarios
+
+# Development Notebook: Add Questions to Existing Project Tab
+
+## Initial Analysis
+
+### Existing Code Structure
+- The Streamlit app is organized with tabs for different functionality
+- The research_orchestrator.py has an existing `add_questions_to_project` function
+- Projects are loaded from research_projects.json and filtered based on criteria
+- The app uses subprocess to run research_orchestrator.py and capture its output
+- Progress tracking is handled by parsing stdout from the process
+
+### Command-line Structure
+The command-line interface for adding questions to a project uses:
+```
+python research_orchestrator.py --existing-project <project_id> --add-questions --questions "<question1>" --questions "<question2>" ...
+```
+
+Additional parameters include:
+- `--max-workers`: Number of parallel worker threads
+- `--max-citations`: Maximum citations to process
+- `--openai-integration`: Whether to enable or disable OpenAI integration
+
+## Design Decisions
+
+### UI Design
+1. **Project Selection**: Use a dropdown to select from existing projects
+2. **Question Input**: Use a text area with one question per line
+3. **Project Info**: Show existing questions in an expander for context
+4. **Configuration**: Include sliders for max workers and citations
+
+### Project Filtering
+- Include incomplete projects since adding questions is valid for in-progress projects
+- Allow showing/hiding inactive projects with a toggle
+- Don't require OpenAI integration, to allow adding questions to projects without it
+
+### Progress Tracking
+- Reuse the progress tracking code from "Start New Research" for consistency
+- Add colored log output with timestamps
+- Include an auto-scrolling log display
+- Add a progress bar with status updates based on log parsing
+
+### Error Handling
+- Validate input before submitting (empty input, invalid questions)
+- Handle subprocess errors with clear error messages
+- Include proper error logging for debugging
+
+## Implementation Notes
+
+### Command Building
+When building the command to run research_orchestrator.py, each question is added as a separate `--questions` argument rather than a single comma-separated list. This matches how the command-line interface expects the arguments.
+
+### Progress Tracking
+The progress bar uses different thresholds based on log keywords:
+- "Adding questions to project": 20%
+- "Searching for information": 40%
+- "Processing search results": 60%
+- "Uploading to OpenAI": 80%
+- "Research completed": 100%
+
+### Project Refresh
+After successfully adding questions, the project list cache is invalidated by setting:
+```python
+st.session_state.project_list_cache_time = 0
+```
+This ensures the updated project appears when the page is refreshed.
+
+## Testing Approach
+1. **Input Validation**: Test with empty input, single question, multiple questions
+2. **Project Selection**: Test with projects in different states (active, inactive, completed, in-progress)
+3. **Error Handling**: Test with invalid inputs and ensure proper error messages
+4. **Integration**: Verify questions are correctly added to the selected project
+5. **UI Verification**: Check that project info updates after questions are added
+
+## Challenges and Solutions
+- **Command Structure**: Ensuring questions with spaces are properly passed to the subprocess
+- **Progress Tracking**: Parsing stdout in real-time for meaningful progress updates
+- **Error Handling**: Capturing and displaying stderr for better error diagnostics
+- **Project Filtering**: Finding the right balance for which projects to show by default
+
+## OpenAI Integration Optimization
+
+### Problem Identified
+When adding new questions to an existing project, the original implementation was re-uploading ALL files in the project to OpenAI, not just the newly generated files for the new questions. This caused:
+- Inefficient use of OpenAI API (uploading the same files multiple times)
+- Longer processing times
+- Potential duplication in the vector store
+- Unnecessary API costs
+
+### Solution Implemented
+1. **Created New Function**: Implemented `process_new_files_with_openai` that only handles new files
+2. **Smart File Detection**:
+   - Used naming patterns to identify files related to new questions (e.g., Q05_markdown.md for question 5)
+   - Only uploaded README if it wasn't already uploaded
+   - Only uploaded consolidated summaries and indexes that might have changed
+3. **Vector Store Reuse**:
+   - Checked for existing vector store ID in project data
+   - Reused the existing vector store instead of creating a new one
+   - Merged new file IDs with existing ones
+4. **Fallback Mechanism**:
+   - If no existing vector store found, falls back to regular process_files_with_openai
+   - Handles error conditions gracefully
+
+### Implementation Details
+```python
+# Key files affected
+# 1. Modified: research_orchestrator.py
+#    - Added process_new_files_with_openai function
+#    - Updated add_questions_to_project to use the new function
+```
+
+The implementation maintains all important behaviors while significantly improving efficiency for the OpenAI integration.
+
+## Project Metadata Bug Fix
+
+### Problem Identified
+When adding questions to an existing project, important project metadata fields were being lost:
+- The `topic`, `perspective`, and `depth` fields inside the `parameters` object were being overwritten
+- This happened because the `update_project_in_tracking` function was called with a new `parameters` object that only contained the `questions` field
+- The `dict.update()` method replaces entire nested objects rather than merging them
+
+### Root Cause
+1. In `add_questions_to_project`, the function was calling:
+   ```python
+   update_project_in_tracking(project_data["id"], {
+       "parameters": {"questions": all_questions},
+       "status": "in_progress",
+       "active": active_status
+   })
+   ```
+   This replaced the entire `parameters` object with one that only had the `questions` field.
+
+2. The problem with the `update_project_in_tracking` function is that it uses `project.update(updates)` which replaces nested dictionaries rather than merging them.
+
+### Solution Implemented
+1. **Preserve All Parameters**: Changed the code to make a copy of the entire parameters object first, then update just the questions field:
+   ```python
+   # Get full parameters to preserve fields like topic, perspective, and depth
+   parameters_update = project_data.get("parameters", {}).copy()
+   parameters_update["questions"] = all_questions
+   
+   update_project_in_tracking(project_data["id"], {
+       "parameters": parameters_update,
+       "status": "in_progress",
+       "active": active_status
+   })
+   ```
+
+2. **Clarified Documentation**: Updated the documentation of `update_project_in_tracking` to warn about this behavior:
+   ```python
+   """
+   IMPORTANT: This function uses dict.update() which replaces entire nested objects.
+   For example, if you pass {"parameters": {"questions": [...]}}, it will replace the
+   entire "parameters" object, losing any other fields like "topic", "perspective", etc.
+   Always copy the full object first before modifying it.
+   """
+   ```
+
+### Lessons Learned
+- When updating nested data structures, be careful with methods that replace rather than merge
+- Always make a deep copy of nested objects before making updates to avoid unintended side effects
+- Ensure documentation clearly communicates potentially surprising behavior
+- Test updates on complex data structures with all potential fields to catch similar issues early
+
+## Project Selection Sync Between Tabs
+
+### Feature Added
+Added a feature to synchronize project selection between the "Chat with Projects" tab and the "Add Questions to Existing Project" tab:
+
+1. **Problem**: Previously, when switching from the Chat tab to the Add Questions tab, users had to reselect the same project they were already working with.
+
+2. **Solution Implemented**:
+   - Modified the `add_questions_to_existing_project` function to check for the currently selected project in the Chat tab
+   - If found in the available projects list, set that project as the default selection
+   - Used the project's unique ID for matching to ensure the correct project is selected
+
+3. **Implementation Details**:
+   ```python
+   # Find if the currently selected project from Chat tab is in the available projects list
+   chat_selected_project = get_selected_project()
+   default_index = 0
+   
+   if chat_selected_project:
+       # Try to find the currently selected project in the available projects list
+       for i, project in enumerate(available_projects):
+           if project.get("id") == chat_selected_project.get("id"):
+               default_index = i
+               break
+   
+   selected_index = st.selectbox(
+       "Select a project to add questions to:",
+       range(len(project_options)),
+       format_func=lambda i: project_options[i],
+       key="add_questions_project_selector",
+       index=default_index
+   )
+   ```
+
+4. **Benefits**:
+   - Improved user experience by maintaining context when switching between tabs
+   - Reduced repetitive selections when working with the same project
+   - Created a more cohesive feeling across the application's tabs

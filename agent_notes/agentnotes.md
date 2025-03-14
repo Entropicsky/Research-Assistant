@@ -900,3 +900,122 @@ Successfully implemented the planned command-line enhancements:
 - Maintained compatibility with existing functionality
 
 These fixes ensure that the research orchestrator functions correctly in all modes of operation, providing a robust tool for research automation with proper error handling and user feedback. 
+
+## Documentation Updates (March 15, 2024)
+
+After implementing and testing the new command-line features, we've updated the documentation to reflect these changes:
+
+### 1. README Updates
+
+The README.md file has been updated with:
+- A new section for March 15, 2024 updates, highlighting the command-line enhancements
+- An updated command-line arguments table that includes the new options:
+  - `--existing-project`: To work with existing research projects
+  - `--add-questions`: To add new questions to existing projects
+- Additional example commands demonstrating how to use the new features
+- Proper formatting to maintain consistency with the existing documentation
+
+### 2. User Preferences
+
+Based on our interactions, the user prefers:
+- Comprehensive documentation with clear examples
+- Command-line tools that are flexible and can be used in multiple modes
+- Features that build on existing functionality without breaking backward compatibility
+- Clean error handling and user feedback during operation
+- Proper integration between the command-line tools and the web interface
+
+The documentation updates ensure that users can effectively utilize the new features while maintaining compatibility with their existing workflows. 
+
+## Recent Work: Active Field Implementation
+We recently implemented and fixed the "active" field in the project data structure. This field is used to determine whether a project should be displayed in the Streamlit app by default.
+
+### Key Components:
+- **research_projects.json**: The main data store for all research projects
+- **research_orchestrator.py**: The command-line tool for creating and managing projects
+- **streamlit_app/**: The web application for interacting with projects
+  - **utils/projects.py**: Contains functions for filtering and updating projects
+  - **components/project_selector.py**: UI components for selecting projects
+
+### Implementation Details:
+- New projects are created with `"active": True` by default
+- The active field is preserved when updating projects
+- The Streamlit app has a toggle to show/hide inactive projects
+- The Streamlit app has a button to activate/deactivate projects
+
+### Recent Changes:
+- Created a script (`update_active_status.py`) to update all existing projects to have the active field set to true
+- Verified that all projects now have the active field set to true
+- Ensured that the active field is preserved when updating projects
+
+## User Preferences
+- The user prefers to have all projects active by default
+- The user wants the ability to deactivate projects in the Streamlit app
+- The user wants the ability to filter projects based on their active status
+
+## Future Work
+- Ensure that all new projects have the active field set to true by default
+- Update the documentation to explain the purpose and usage of the active field
+- Consider adding a command-line option to set the active field when creating a new project
+- Add tests to verify that the active field is correctly handled in all scenarios 
+
+# Agent Notes: Add Questions to Existing Project Tab
+
+## Project Overview
+This project adds a new tab to the Streamlit app called "Add Questions to Existing Project". This tab allows users to select an existing research project and add new questions to it. The questions are processed by the research_orchestrator.py backend, which searches for information, processes citations, and optionally uploads the results to OpenAI for vector search.
+
+## Recent Improvements
+- **Optimized OpenAI Integration**: Fixed an issue where all project files were being re-uploaded to OpenAI when adding new questions, instead of just uploading the newly generated files. This significantly improves efficiency and reduces API usage. The implementation involves:
+  1. Creating a new `process_new_files_with_openai` function that only uploads files for newly added questions
+  2. Detecting file patterns for new questions (e.g., Q05_markdown.md for question 5)
+  3. Reusing the existing vector store ID instead of creating a new one
+  4. Merging new file IDs with existing ones in the project tracking data
+
+- **Fixed Project Metadata Loss**: Fixed a bug where project metadata like topic, perspective, and depth were being lost when adding questions:
+  1. Identified that `update_project_in_tracking` was replacing the entire parameters object
+  2. Modified the code to make a copy of all parameters first, then update just the questions field
+  3. Added documentation to explain the behavior of `update_project_in_tracking`
+  4. Ensured all project metadata is preserved through updates
+
+- **Synchronized Project Selection Between Tabs**: Improved user experience by syncing the project selection:
+  1. Made the "Add Questions to Existing Project" tab default to the same project selected in the "Chat with Projects" tab
+  2. Implemented matching based on project ID to ensure correct selection
+  3. Maintained the ability to select a different project if needed
+  4. Created a more seamless workflow when working with the same project across tabs
+
+## Key Components
+- **App Structure**: The Streamlit app is structured with tabs for different functionality, with the new tab being the third one.
+- **Backend Integration**: The tab integrates with the existing `add_questions_to_project` function in research_orchestrator.py through a subprocess call.
+- **Project Selection**: Users can select from existing projects, including incomplete ones and optionally inactive ones.
+- **Question Input**: Users enter new questions in a text area, one per line.
+- **Configuration Options**: Users can configure max workers, max citations, and enable/disable OpenAI integration.
+- **Progress Tracking**: Real-time progress tracking with colored log output and auto-scrolling.
+
+## Important Files
+- `streamlit_app/app.py`: Main Streamlit app file with the tab implementation
+- `research_orchestrator.py`: Backend script that processes the questions
+- `streamlit_app/utils/projects.py`: Utility functions for loading and filtering projects
+- `streamlit_app/utils/state.py`: State management for the Streamlit app
+
+## User Preferences & Conventions
+- **Clean UI**: Prefer concise, clean UI with good spacing and clear instructions
+- **Real-time Feedback**: Provide detailed progress updates during processing
+- **Error Handling**: Clear error messages and graceful failure modes
+- **Configuration Options**: Exposed important parameters like thread count and citation limit
+- **Project Info**: Show relevant project information to provide context
+- **Efficiency**: Users prefer optimized operations that avoid unnecessary API usage
+
+## Implementation Notes
+- The project uses subprocess to call research_orchestrator.py, capturing and displaying the output in real-time
+- Projects are filtered to include incomplete ones, since adding questions is valid for in-progress projects
+- Both active and inactive projects can be shown based on user preference
+- The implementation reuses much of the progress tracking code from the "Start New Research" tab for consistency
+- The OpenAI integration now only uploads new files when adding questions, not all project files
+
+## Future Session Information
+For future sessions working on this project:
+1. The "Add Questions to Existing Project" tab is fully implemented but needs testing with real projects
+2. The tab follows the same design patterns as the existing tabs in the app
+3. Progress tracking is handled through subprocess stdout parsing for real-time updates
+4. Error handling includes both frontend (input validation) and backend (process monitoring) components
+5. The project information display provides context for the selected project before adding questions
+6. The OpenAI integration has been optimized to only upload new files, not all project files 

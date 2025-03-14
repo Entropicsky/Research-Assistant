@@ -67,10 +67,10 @@ def project_card(
         # Using html for the card styling with optional inactive styling
         st.markdown(f"""
         <div class="{card_class}" style="{card_style}">
-            <div class="project-card-title">{project_topic}</div>
+            <div class="project-card-title" style="color: #000000;">{project_topic}</div>
             <div class="project-card-info">
-                <div>Date: {formatted_date}</div>
-                <div>Status: {status.upper()}</div>
+                <div style="color: #000000;">Date: {formatted_date}</div>
+                <div style="color: #000000;">Status: {status.upper()}</div>
                 <div style="color: {'#888' if not is_active else '#000'};">{status_text}</div>
             </div>
         </div>

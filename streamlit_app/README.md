@@ -4,21 +4,23 @@ A web-based interface for interacting with research projects and initiating new 
 
 ## Features
 
-This app provides three main functionalities:
+This app provides four main functionalities:
 
 1. **Chat with Research Projects**: Interact with existing research using OpenAI's vector search capabilities
 2. **Start New Research**: Configure and launch new research projects 
-3. **Preview Research Questions**: Generate sample research questions without starting a full project
+3. **Add Questions to Existing Project**: Expand existing research projects with new questions
+4. **Preview Research Questions**: Generate sample research questions without starting a full project
 
 ## Setup
 
 ### Prerequisites
 
 - Python 3.8+
-- Streamlit (`pip install streamlit`)
-- OpenAI Python SDK (`pip install openai`)
-- Python-dotenv (`pip install python-dotenv`)
-- Access to the parent directory with `research_orchestrator.py`
+- Required packages:
+  ```bash
+  pip install -r requirements.txt
+  ```
+  The requirements.txt file is in the root directory of the project.
 
 ### Environment Variables
 
@@ -85,7 +87,29 @@ This tab provides a form-based interface to configure and initiate new research 
 3. View real-time progress as the research executes
 4. After completion, the project will be available in the Chat tab
 
-## Tab 3: Preview Questions
+## Tab 3: Add Questions to Existing Project
+
+This tab allows you to add new questions to an existing research project.
+
+### Features:
+
+- Project selection that defaults to the currently selected project in the Chat tab
+- Display of current project information including existing questions
+- Text area for entering new questions (one per line)
+- Configuration options for worker threads, citations, and OpenAI integration
+- Real-time progress display during processing
+
+### How It Works:
+
+1. Select an existing project (defaults to the one selected in Chat tab)
+2. Review the current project information
+3. Enter new questions, one per line
+4. Configure processing parameters
+5. Click "Add Questions" to begin the process
+6. View real-time progress as the questions are processed
+7. After completion, the updated project will be available in the Chat tab
+
+## Tab 4: Preview Questions
 
 This tab allows you to generate sample research questions without starting a full research project.
 
@@ -102,34 +126,49 @@ This tab allows you to generate sample research questions without starting a ful
 3. Click "Generate Preview" to see sample questions
 4. Review questions before starting a full research project
 
+## Recent Improvements (March 2024)
+
+1. **Project Synchronization**:
+   - The "Add Questions to Existing Project" tab now defaults to the project selected in the "Chat with Projects" tab
+   - This creates a more seamless workflow when expanding research projects
+
+2. **User Interface Enhancements**:
+   - Fixed text visibility issues throughout the application
+   - Ensured proper text color contrast in all components
+   - Improved the styling of citations and web citations
+
+3. **Chat Experience**:
+   - Improved message display and formatting
+   - Enhanced citation and source information display
+   - Better error handling and feedback
+
+4. **OpenAI Integration Optimization**:
+   - The backend now only uploads new files when adding questions to projects
+   - This reduces API usage and speeds up the process
+   - Fixed bug where project metadata was being lost during updates
+
 ## Troubleshooting
 
 ### Common Issues:
 
-1. **"Could not import from research_orchestrator.py" warning**:
-   - Ensure the parent directory contains `research_orchestrator.py`
-   - Check Python path configuration
+1. **Missing Projects**:
+   - Ensure `RESEARCH_PROJECTS_FILE` points to the correct file
+   - Check that projects have completed OpenAI integration
+   - Toggle "Show Inactive Projects" if projects are not appearing
 
-2. **No research projects available**:
-   - Verify that `research_projects.json` exists and is properly formatted
-   - Check that at least one project has completed OpenAI integration
+2. **Chat Not Working**:
+   - Verify `OPENAI_API_KEY` is set correctly
+   - Check that vector store IDs exist in the project data
+   - Ensure the selected model is available in your OpenAI account
 
-3. **Chat not working**:
-   - Confirm OpenAI API key is correctly set
-   - Check vector store ID in the project data
-   - Look for error messages in the chat interface
+3. **Text Visibility Issues**:
+   - If text in chat inputs or other fields is not visible, check your browser's color scheme
+   - The app has been updated to ensure text is visible in both light and dark modes
 
-4. **Research initiation fails**:
-   - Check that all required API keys are correctly set
-   - Verify that `research_orchestrator.py` is accessible
-   - Look for error messages in the output area
+4. **Project Selection Errors**:
+   - If selecting a project fails, try toggling the "Show Inactive Projects" option
+   - Check the project's status in the `research_projects.json` file
 
-## Recent Updates
-
-### March 14, 2024:
-- Fixed chat functionality with proper message display
-- Improved session state management for better conversation persistence
-- Enhanced error handling for OpenAI responses
-- Added "New Chat / Switch Project" button for better navigation
-- Updated from deprecated `st.experimental_rerun()` to `st.rerun()`
-- Improved markdown rendering of chat messages 
+5. **Real-time Progress Issues**:
+   - If progress is not updating, check your browser's JavaScript settings
+   - Try running the app in a different browser if issues persist 

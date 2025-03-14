@@ -410,3 +410,83 @@
   - [x] Ensure proper function calls and parameter passing
   - [x] Maintain consistent variable naming
   - [x] Follow established code patterns 
+
+## Documentation Updates (March 15, 2024)
+
+- [x] Update README with new command-line features
+  - [x] Add section about March 15 updates
+  - [x] Update command-line arguments table with new options
+  - [x] Add additional example commands for new features
+  - [x] Ensure documentation matches implementation 
+
+# Project Checklist
+
+## Active Field Implementation
+
+- [x] Analyze the current implementation of the active field in the codebase
+- [x] Identify that the active field is set to true when creating new projects
+- [x] Verify that the active field is preserved when updating projects
+- [x] Check how the Streamlit app handles the active field
+- [x] Create a script to update all existing projects to have the active field set to true
+- [x] Run the script to update all projects
+- [x] Verify that all projects now have the active field set to true
+
+## Next Steps
+
+- [ ] Ensure that all new projects have the active field set to true by default
+- [ ] Update the documentation to explain the purpose and usage of the active field
+- [ ] Consider adding a command-line option to set the active field when creating a new project
+- [ ] Add tests to verify that the active field is correctly handled in all scenarios 
+
+# Project Checklist: Add Questions to Existing Project Tab
+
+## Feature Requirements
+- [x] Create a new tab in the Streamlit app
+- [x] Add project selection interface
+- [x] Display existing project information
+- [x] Create question input interface
+- [x] Add configuration options (max workers, citations, OpenAI integration)
+- [x] Connect to the research_orchestrator.py backend
+- [x] Add progress tracking and real-time log display
+- [x] Implement error handling
+- [x] Add success/completion messaging
+- [x] Optimize OpenAI integration to only upload new files
+- [x] Fix bug where project metadata was being lost
+- [x] Sync project selection with Chat tab
+- [x] Test with real projects
+
+## Implementation Steps
+- [x] Analyze existing codebase
+- [x] Understand the add_questions_to_project function in research_orchestrator.py
+- [x] Modify app.py to add the new tab
+- [x] Implement the add_questions_to_existing_project function
+- [x] Reuse the progress tracking code from the "Start New Research" tab
+- [x] Build the command line arguments for the subprocess
+- [x] Ensure proper filtering of projects (include incomplete projects)
+- [x] Add project information display
+- [x] Fix OpenAI integration to only upload new files instead of all files
+- [x] Fix bug where project metadata (topic, perspective, depth) was being lost
+- [x] Implement project selection sync with Chat tab
+- [x] Test the functionality with a real project
+- [x] Fix any issues discovered during testing
+
+## Completed Optimizations
+- [x] Optimized OpenAI integration to only upload new files instead of all project files
+- [x] Fixed project metadata preservation when updating projects
+- [x] Ensured UI elements are visible with proper text colors
+- [x] Synchronized project selection between tabs
+- [x] Improved error handling and feedback throughout the application
+
+## Documentation Tasks
+- [x] Update main README.md with new feature information
+- [x] Update streamlit_app/README.md with tab details
+- [x] Document the OpenAI optimization in agent notes
+- [x] Document the project metadata fix in agent notes
+- [x] Document the project selection sync in agent notes
+
+## GitHub Integration
+- [x] Create GitHub repository
+- [x] Initial project commit
+- [x] Add requirements.txt file
+- [x] Update project documentation
+- [x] Commit latest changes 

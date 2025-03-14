@@ -168,8 +168,8 @@ def initiate_research_project():
                                    help="Enter the professional perspective to research from (e.g., 'Chief Product Officer')")
         
         depth = st.slider("Number of Questions", 
-                          min_value=1, 
-                          max_value=20, 
+                          min_value=0, 
+                          max_value=70, 
                           value=5,
                           help="Select how many research questions to generate")
         
@@ -458,8 +458,8 @@ def preview_questions():
                                value="Researcher")
     
     depth = st.slider("Number of Questions (for preview)", 
-                      min_value=1, 
-                      max_value=20, 
+                      min_value=0, 
+                      max_value=70, 
                       value=5)
     
     if st.button("Generate Preview") and topic:
@@ -474,6 +474,383 @@ def preview_questions():
                     st.error("Failed to generate questions. Please try again.")
             except Exception as e:
                 st.error(f"Error generating questions: {str(e)}")
+
+def add_questions_to_existing_project():
+    """Add new questions to an existing research project."""
+    st.header("Add Questions to Existing Project")
+    
+    if not has_research_orchestrator:
+        st.error("Research orchestrator module not available. Cannot add questions to projects.")
+        return
+    
+    # Load and filter projects - allow projects regardless of OpenAI integration status
+    all_projects = load_research_projects()
+    show_inactive = should_show_inactive_projects()
+    available_projects = filter_available_projects(
+        all_projects, 
+        require_openai=False,
+        require_vector_store=False,
+        include_incomplete=True,
+        include_inactive=show_inactive
+    )
+    
+    if not available_projects:
+        st.warning("No research projects available. Create a new project first.")
+        return
+    
+    # Toggle for inactive projects
+    if st.toggle("Show Inactive Projects", value=show_inactive, key="show_inactive_toggle_add"):
+        if not show_inactive:
+            set_show_inactive_projects(True)
+            st.rerun()
+    else:
+        if show_inactive:
+            set_show_inactive_projects(False)
+            st.rerun()
+    
+    # Project selection
+    project_options = [
+        f"{p.get('parameters', {}).get('topic', 'Research Project')} ({p.get('timestamp', '').split('T')[0]})"
+        for p in available_projects
+    ]
+    
+    # Find if the currently selected project from Chat tab is in the available projects
+    chat_selected_project = get_selected_project()
+    default_index = 0
+    
+    if chat_selected_project:
+        # Try to find the currently selected project in the available projects list
+        for i, project in enumerate(available_projects):
+            if project.get("id") == chat_selected_project.get("id"):
+                default_index = i
+                break
+    
+    selected_index = st.selectbox(
+        "Select a project to add questions to:",
+        range(len(project_options)),
+        format_func=lambda i: project_options[i],
+        key="add_questions_project_selector",
+        index=default_index
+    )
+    
+    selected_project = available_projects[selected_index]
+    project_id = selected_project.get("id")
+    
+    # Display current project info
+    with st.expander("Current Project Information", expanded=True):
+        # Project topic and details
+        topic = selected_project.get("parameters", {}).get("topic", "Untitled Project")
+        st.markdown(f"**Project:** {topic}")
+        
+        # Show existing questions
+        existing_questions = selected_project.get("parameters", {}).get("questions", [])
+        st.markdown(f"**Existing Questions:** {len(existing_questions)}")
+        
+        if existing_questions:
+            for i, question in enumerate(existing_questions, 1):
+                st.markdown(f"{i}. {question}")
+    
+    # Form for adding questions
+    with st.form("add_questions_form"):
+        st.subheader("Add New Questions")
+        
+        # Text area for questions (one per line)
+        questions_text = st.text_area(
+            "Enter new questions (one per line)",
+            height=200,
+            help="Enter each research question on a new line."
+        )
+        
+        # Configuration options
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            max_workers = st.slider(
+                "Maximum Worker Threads", 
+                min_value=1, 
+                max_value=10, 
+                value=3,
+                help="Select maximum number of parallel worker threads"
+            )
+        
+        with col2:
+            max_citations = st.slider(
+                "Maximum Citations", 
+                min_value=10, 
+                max_value=100, 
+                value=50,
+                help="Select maximum number of citations to process"
+            )
+        
+        # OpenAI integration option
+        enable_openai = st.checkbox(
+            "Enable OpenAI Integration", 
+            value=True,
+            help="Upload research to OpenAI for vector search"
+        )
+        
+        submitted = st.form_submit_button("Add Questions")
+        
+        if submitted:
+            if not questions_text.strip():
+                st.error("Please enter at least one question.")
+                return
+            
+            # Parse questions (one per line)
+            new_questions = [q.strip() for q in questions_text.splitlines() if q.strip()]
+            
+            if not new_questions:
+                st.error("No valid questions found. Please enter at least one question.")
+                return
+            
+            # Detect which python command is available
+            python_cmd = "python3"
+            try:
+                import shutil
+                if not shutil.which("python3"):
+                    python_cmd = "python"
+                    
+                logger.info(f"Using Python command: {python_cmd}")
+            except Exception as e:
+                logger.warning(f"Error detecting Python command: {str(e)}. Falling back to python3")
+            
+            # Build command for subprocess
+            cmd = [
+                python_cmd, 
+                "research_orchestrator.py",
+                "--existing-project", project_id,
+                "--add-questions"
+            ]
+            
+            # Add each question as a separate argument
+            for question in new_questions:
+                cmd.extend(["--questions", question])
+            
+            # Add other parameters
+            cmd.extend([
+                "--max-workers", str(max_workers),
+                "--max-citations", str(max_citations),
+                "--openai-integration", "enable" if enable_openai else "disable"
+            ])
+            
+            # Execute research_orchestrator.py as a subprocess
+            with st.spinner(f"Adding {len(new_questions)} questions to project..."):
+                try:
+                    # Create a progress display container
+                    progress_container = st.container()
+                    with progress_container:
+                        st.subheader("Processing Progress")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        # Add a copy button for the logs
+                        copy_col1, copy_col2 = st.columns([3, 1])
+                        with copy_col2:
+                            st.markdown("""
+                            <div id="copy-button-container" style="text-align: right;">
+                                <button id="copy-logs-button" style="
+                                    background-color: #f0f2f6; 
+                                    border: 1px solid #ddd; 
+                                    padding: 5px 10px; 
+                                    border-radius: 4px;
+                                    cursor: pointer;
+                                    font-size: 0.8em;">
+                                    📋 Copy Logs
+                                </button>
+                            </div>
+                            
+                            <script>
+                                document.getElementById('copy-logs-button').addEventListener('click', function() {
+                                    const preElement = document.querySelector('[data-testid="stText"] pre');
+                                    if (preElement) {
+                                        const text = preElement.textContent;
+                                        navigator.clipboard.writeText(text).then(
+                                            () => {
+                                                const btn = document.getElementById('copy-logs-button');
+                                                const originalText = btn.textContent;
+                                                btn.textContent = "✅ Copied!";
+                                                setTimeout(() => { btn.textContent = originalText; }, 2000);
+                                            },
+                                            () => {
+                                                const btn = document.getElementById('copy-logs-button');
+                                                btn.textContent = "❌ Failed to copy";
+                                                setTimeout(() => { btn.textContent = "📋 Copy Logs"; }, 2000);
+                                            }
+                                        );
+                                    }
+                                });
+                            </script>
+                            """, unsafe_allow_html=True)
+                        
+                        # Create a container for the log output with auto-scroll
+                        log_container = st.container()
+                        
+                        # Add custom JavaScript to auto-scroll to bottom
+                        st.markdown("""
+                        <script>
+                            // Function to scroll log to bottom
+                            function scrollLogToBottom() {
+                                const logElement = document.querySelector('[data-testid="stText"] pre');
+                                if (logElement) {
+                                    logElement.style.maxHeight = "400px";
+                                    logElement.style.overflow = "auto";
+                                    logElement.scrollTop = logElement.scrollHeight;
+                                }
+                            }
+                            
+                            // Set initial scroll and add observer to handle updates
+                            scrollLogToBottom();
+                            const observer = new MutationObserver(scrollLogToBottom);
+                            const targetNode = document.querySelector('[data-testid="stText"]');
+                            if (targetNode) {
+                                observer.observe(targetNode, { childList: true, subtree: true });
+                            }
+                        </script>
+                        """, unsafe_allow_html=True)
+                    
+                    # Run the process and capture output in real-time
+                    process = subprocess.Popen(
+                        cmd, 
+                        stdout=subprocess.PIPE, 
+                        stderr=subprocess.STDOUT,
+                        universal_newlines=True
+                    )
+                    
+                    # Import datetime for timestamps
+                    from datetime import datetime
+                    
+                    # Show output in real-time with auto-scrolling and timestamps
+                    full_output = ""
+                    log_display = log_container.empty()
+                    
+                    # Track if we need to parse log sections
+                    need_to_parse_sections = True
+                    current_output = []
+                    
+                    for line in iter(process.stdout.readline, ''):
+                        if not line:
+                            break
+                            
+                        # Check if this looks like a log section start
+                        if '[' in line and ']' in line and any(x in line for x in ['m[', 'Generating', 'Processing', 'Searching', 'Calling']):
+                            # If we detect a timestamp pattern like [HH:MM:SS], treat as a new log entry
+                            need_to_parse_sections = True
+                        
+                        # Add timestamp to the line
+                        timestamp = datetime.now().strftime("%H:%M:%S")
+                        
+                        # Strip only trailing/leading whitespace but preserve internal spacing
+                        styled_line = line.rstrip().lstrip()
+                        
+                        # Parse long lines into smaller chunks if needed
+                        if need_to_parse_sections and len(styled_line) > 80 and ('[' in styled_line and ']' in styled_line):
+                            # Try to break apart sections that look like separate log entries but got combined
+                            sections = []
+                            # Split on timestamp-like patterns but keep the delimiter
+                            import re
+                            parts = re.split(r'(\[\d{2}:\d{2}:\d{2}\])', styled_line)
+                            
+                            # Reconstruct with line breaks
+                            current_section = ""
+                            for i, part in enumerate(parts):
+                                if i > 0 and re.match(r'\[\d{2}:\d{2}:\d{2}\]', part):
+                                    # This is a timestamp, start a new section
+                                    if current_section:
+                                        sections.append(current_section)
+                                    current_section = part
+                                else:
+                                    current_section += part
+                            
+                            if current_section:
+                                sections.append(current_section)
+                                
+                            # Process each section with colors
+                            for section in sections:
+                                # Color the section based on content
+                                if "ERROR" in section or "Error" in section or "Failed" in section:
+                                    current_output.append(f"<span style='color: #ff4b4b;'>[{timestamp}] {section}</span>")
+                                elif "WARNING" in section or "Warning" in section:
+                                    current_output.append(f"<span style='color: #ffa500;'>[{timestamp}] {section}</span>")
+                                elif "Searching for:" in section:
+                                    current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {section}</span>")
+                                elif "Processing results" in section:
+                                    current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {section}</span>")
+                                elif "Generating" in section:
+                                    current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {section}</span>")
+                                elif "Uploading to OpenAI" in section:
+                                    current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {section}</span>")
+                                elif "Research completed" in section or "success" in section.lower():
+                                    current_output.append(f"<span style='color: #00cc66;'>[{timestamp}] {section}</span>")
+                                elif "INFO" in section:
+                                    current_output.append(f"<span style='color: #7f7f7f;'>[{timestamp}] {section}</span>")
+                                else:
+                                    current_output.append(f"[{timestamp}] {section}")
+                        else:
+                            # Process normally
+                            if "ERROR" in styled_line or "Error" in styled_line or "Failed" in styled_line:
+                                current_output.append(f"<span style='color: #ff4b4b;'>[{timestamp}] {styled_line}</span>")
+                            elif "WARNING" in styled_line or "Warning" in styled_line:
+                                current_output.append(f"<span style='color: #ffa500;'>[{timestamp}] {styled_line}</span>")
+                            elif "Searching for:" in styled_line:
+                                current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {styled_line}</span>")
+                            elif "Processing results" in styled_line:
+                                current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {styled_line}</span>")
+                            elif "Generating" in styled_line:
+                                current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {styled_line}</span>")
+                            elif "Uploading to OpenAI" in styled_line:
+                                current_output.append(f"<span style='color: #4b8eff;'>[{timestamp}] {styled_line}</span>")
+                            elif "Research completed" in styled_line or "success" in styled_line.lower():
+                                current_output.append(f"<span style='color: #00cc66;'>[{timestamp}] {styled_line}</span>")
+                            elif "INFO" in styled_line:
+                                current_output.append(f"<span style='color: #7f7f7f;'>[{timestamp}] {styled_line}</span>")
+                            else:
+                                current_output.append(f"[{timestamp}] {styled_line}")
+                        
+                        # Join output lines with explicit line breaks for HTML
+                        full_output = "<br>".join(current_output)
+                        
+                        # Update status and progress estimate based on output parsing
+                        if "Adding" in line and "new questions to existing project" in line:
+                            status_text.text("Adding questions to project...")
+                            progress_bar.progress(0.2)
+                        elif "Searching for:" in line:
+                            status_text.text("Searching for information...")
+                            progress_bar.progress(0.4)
+                        elif "Processing results" in line:
+                            status_text.text("Processing search results...")
+                            progress_bar.progress(0.6)
+                        elif "Uploading to OpenAI" in line:
+                            status_text.text("Uploading to OpenAI...")
+                            progress_bar.progress(0.8)
+                        elif "Research completed" in line:
+                            status_text.text("Questions added successfully!")
+                            progress_bar.progress(1.0)
+                        
+                        # Display the log output with HTML formatting for proper line breaks
+                        log_display.markdown(f"""
+                        <div style='margin:0; padding:10px; background-color:#f5f5f5; max-height:400px; overflow:auto; white-space: pre-wrap; word-wrap: break-word;'>
+                            {full_output}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # Wait for process to complete
+                    process.stdout.close()
+                    return_code = process.wait()
+                    
+                    if return_code == 0:
+                        status_text.text("Questions added successfully!")
+                        progress_bar.progress(1.0)
+                        st.success(f"Successfully added {len(new_questions)} questions to project '{topic}'!")
+                        
+                        # Refresh the project list
+                        st.session_state.project_list_cache_time = 0
+                    else:
+                        status_text.text(f"Process failed with error code {return_code}")
+                        st.error(f"Failed to add questions. Process returned with code {return_code}")
+                    
+                except Exception as e:
+                    st.error(f"Error executing process: {str(e)}")
+                    logger.error(f"Error adding questions: {str(e)}", exc_info=True)
 
 def main():
     """Main function to run the Streamlit app."""
@@ -490,7 +867,12 @@ def main():
     """)
     
     # Create tabs for different functionality
-    tab1, tab2, tab3 = st.tabs(["Chat with Projects", "Start New Research", "Preview Questions"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Chat with Projects", 
+        "Start New Research", 
+        "Add Questions to Project",
+        "Preview Questions"
+    ])
     
     with tab1:
         display_chat_tab()
@@ -499,6 +881,9 @@ def main():
         initiate_research_project()
     
     with tab3:
+        add_questions_to_existing_project()
+    
+    with tab4:
         preview_questions()
     
     # Add a footer

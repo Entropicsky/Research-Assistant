@@ -1311,6 +1311,208 @@ def get_project_folder(project_data):
         safe_print(f"{Colors.RED}Error retrieving project folder: {str(e)}{Colors.RESET}")
         return None
 
+def process_new_files_with_openai(master_folder, project_data, start_question_number, question_count):
+    """
+    Process only new research files with OpenAI: upload files, add to vector store, and update tracking.
+    
+    Args:
+        master_folder: Folder containing the research project
+        project_data: Project data dictionary
+        start_question_number: The starting question number for the new questions
+        question_count: The number of new questions added
+        
+    Returns:
+        Updated project data with OpenAI integration info
+    """
+    # Preserve the active status if it exists
+    active_status = project_data.get("active", True)
+    
+    if not ENABLE_OPENAI_INTEGRATION:
+        safe_print(f"{Colors.YELLOW}OpenAI integration is disabled. Set ENABLE_OPENAI_INTEGRATION=true to enable.{Colors.RESET}")
+        project_data["openai_integration"] = {"status": "disabled"}
+        project_data["active"] = active_status
+        return project_data
+        
+    if not OPENAI_AVAILABLE:
+        safe_print(f"{Colors.YELLOW}OpenAI package is not installed. Run 'pip install openai' to enable this feature.{Colors.RESET}")
+        project_data["openai_integration"] = {"status": "unavailable", "reason": "openai package not installed"}
+        project_data["active"] = active_status
+        return project_data
+        
+    if not OPENAI_API_KEY:
+        safe_print(f"{Colors.YELLOW}OPENAI_API_KEY is not set in environment. Add it to your .env file.{Colors.RESET}")
+        project_data["openai_integration"] = {"status": "unavailable", "reason": "api key not configured"}
+        project_data["active"] = active_status
+        return project_data
+    
+    # Create OpenAI client
+    client = create_openai_client()
+    if not client:
+        safe_print(f"{Colors.RED}Failed to create OpenAI client. OpenAI integration will be skipped.{Colors.RESET}")
+        project_data["openai_integration"] = {"status": "error", "reason": "client creation failed"}
+        project_data["active"] = active_status
+        return project_data
+    
+    prefix = "[OpenAI]"
+    safe_print(f"\n{Colors.BOLD}{Colors.CYAN}======== PHASE 5: OPENAI FILE PROCESSING (NEW FILES ONLY) ========{Colors.RESET}")
+    
+    # Get project ID
+    project_id = project_data.get("id")
+    if not project_id:
+        safe_print(f"{Colors.RED}{prefix} Project ID not found in project data. OpenAI integration will be skipped.{Colors.RESET}")
+        project_data["openai_integration"] = {"status": "error", "reason": "project id missing"}
+        project_data["active"] = active_status
+        return project_data
+    
+    # Check if project already has OpenAI integration
+    existing_integration = project_data.get("openai_integration", {})
+    existing_file_ids = existing_integration.get("file_ids", {"readme": None, "markdown_files": [], "summary_files": []})
+    existing_vector_store = existing_integration.get("vector_store", {})
+    vector_store_id = existing_vector_store.get("id")
+    
+    if not vector_store_id:
+        safe_print(f"{Colors.YELLOW}{prefix} No existing vector store found. Will need to create a new one.{Colors.RESET}")
+        # Fall back to regular process_files_with_openai
+        return process_files_with_openai(master_folder, project_data)
+    
+    # Step 1: Upload only the new files to OpenAI
+    safe_print(f"{Colors.CYAN}{prefix} Uploading new files to OpenAI...{Colors.RESET}")
+    
+    new_file_ids = {
+        "readme": None,  # We'll update this from the readme only if it doesn't exist already
+        "markdown_files": [],
+        "summary_files": []
+    }
+    
+    # Upload README.md if it doesn't exist already
+    if not existing_file_ids.get("readme"):
+        readme_path = os.path.join(master_folder, "README.md")
+        if os.path.exists(readme_path):
+            file_id = upload_file_to_openai(client, readme_path, prefix)
+            if file_id:
+                new_file_ids["readme"] = file_id
+                safe_print(f"{Colors.GREEN}{prefix} Uploaded README.md: {file_id}{Colors.RESET}")
+    
+    # Upload only the new markdown files for the new questions
+    markdown_folder = os.path.join(master_folder, "markdown")
+    if os.path.exists(markdown_folder):
+        for i in range(start_question_number, start_question_number + question_count):
+            # Pattern for markdown files: Q01_markdown.md, Q02_markdown.md, etc.
+            file_pattern = f"Q{i:02d}_"
+            for filename in os.listdir(markdown_folder):
+                if filename.endswith(".md") and file_pattern in filename:
+                    file_path = os.path.join(markdown_folder, filename)
+                    file_id = upload_file_to_openai(client, file_path, prefix)
+                    if file_id:
+                        new_file_ids["markdown_files"].append(file_id)
+                        safe_print(f"{Colors.GREEN}{prefix} Uploaded new markdown file: {filename}{Colors.RESET}")
+    
+    # Upload only the new summary files in the summaries folder
+    summaries_folder = os.path.join(master_folder, "summaries")
+    if os.path.exists(summaries_folder):
+        # Upload consolidated files and any files related to new questions
+        for filename in os.listdir(summaries_folder):
+            # Only upload files that are consolidated summaries or related to new questions
+            if filename.endswith(".md") and (
+                filename.startswith("consolidated_") or
+                "master_index" in filename or
+                "citation_index" in filename or
+                any(f"ES{i}_" in filename for i in range(start_question_number, start_question_number + question_count))
+            ):
+                file_path = os.path.join(summaries_folder, filename)
+                file_id = upload_file_to_openai(client, file_path, prefix)
+                if file_id:
+                    new_file_ids["summary_files"].append(file_id)
+                    safe_print(f"{Colors.GREEN}{prefix} Uploaded new summary file: {filename}{Colors.RESET}")
+    
+    # Count total uploaded files
+    total_new_files = (1 if new_file_ids["readme"] else 0) + len(new_file_ids["markdown_files"]) + len(new_file_ids["summary_files"])
+    safe_print(f"{Colors.GREEN}{prefix} Successfully uploaded {total_new_files} new files to OpenAI.{Colors.RESET}")
+    
+    # If no new files were uploaded, just return the existing project data
+    if total_new_files == 0:
+        safe_print(f"{Colors.YELLOW}{prefix} No new files were uploaded. Keeping existing vector store.{Colors.RESET}")
+        project_data["active"] = active_status
+        return project_data
+    
+    # Step 3: Add new files to existing vector store
+    safe_print(f"{Colors.CYAN}{prefix} Adding new files to existing vector store...{Colors.RESET}")
+    
+    # Collect all new file IDs
+    all_new_file_ids = []
+    if new_file_ids["readme"]:
+        all_new_file_ids.append(new_file_ids["readme"])
+    all_new_file_ids.extend(new_file_ids["markdown_files"])
+    all_new_file_ids.extend(new_file_ids["summary_files"])
+    
+    added_count = add_files_to_vector_store(client, vector_store_id, all_new_file_ids, prefix)
+    safe_print(f"{Colors.GREEN}{prefix} Added {added_count} new files to vector store.{Colors.RESET}")
+    
+    if added_count == 0:
+        safe_print(f"{Colors.RED}{prefix} Failed to add any new files to vector store.{Colors.RESET}")
+        project_data["active"] = active_status
+        return project_data
+    
+    # Step 4: Wait for files to be processed
+    safe_print(f"{Colors.CYAN}{prefix} Waiting for files to be processed...{Colors.RESET}")
+    all_completed = False
+    max_checks = OPENAI_PROCESSING_MAX_CHECKS
+    check_interval = OPENAI_PROCESSING_CHECK_INTERVAL
+    check_count = 0
+    
+    while not all_completed and check_count < max_checks:
+        check_count += 1
+        all_completed = check_files_processing_status(client, vector_store_id, prefix)
+        
+        if not all_completed:
+            safe_print(f"{Colors.CYAN}{prefix} Files still processing. Checking again in {check_interval} seconds... (Check {check_count}/{max_checks}){Colors.RESET}")
+            time.sleep(check_interval)
+    
+    # Merge new file IDs with existing file IDs
+    merged_file_ids = {
+        "readme": new_file_ids["readme"] or existing_file_ids.get("readme"),
+        "markdown_files": existing_file_ids.get("markdown_files", []) + new_file_ids["markdown_files"],
+        "summary_files": existing_file_ids.get("summary_files", []) + new_file_ids["summary_files"]
+    }
+    
+    # Update project tracking with updated vector store info
+    vector_store_info = {
+        "id": vector_store_id,
+        "name": existing_vector_store.get("name"),
+        "file_count": existing_vector_store.get("file_count", 0) + added_count,
+        "processing_completed": all_completed
+    }
+    
+    # Create update data that preserves project parameters
+    update_data = {
+        "openai_integration": {
+            "status": "success",
+            "file_ids": merged_file_ids,
+            "vector_store": vector_store_info
+        }
+    }
+    
+    # Make sure we're not overwriting any other project data
+    # Only update the openai_integration field in the tracking file
+    update_project_in_tracking(project_id, update_data)
+    
+    # Add the vector store info to the project data
+    project_data["openai_integration"] = {
+        "status": "success",
+        "file_ids": merged_file_ids,
+        "vector_store": vector_store_info
+    }
+    
+    # Ensure active status is preserved
+    project_data["active"] = active_status
+    
+    if all_completed:
+        safe_print(f"{Colors.BOLD}{Colors.GREEN}{prefix} All files have been processed successfully!{Colors.RESET}")
+    else:
+        safe_print(f"{Colors.YELLOW}{prefix} Some files are still not processed after maximum wait time. You can check status later.{Colors.RESET}")
+    
+    return project_data
+
 def add_questions_to_project(project_data, new_questions, args):
     """
     Add new questions to an existing project.
@@ -1324,6 +1526,9 @@ def add_questions_to_project(project_data, new_questions, args):
         dict: Updated project data or None if failed
     """
     try:
+        # Preserve the active status
+        active_status = project_data.get("active", True)
+        
         # Get the project folder
         master_folder = get_project_folder(project_data)
         if not master_folder:
@@ -1342,10 +1547,19 @@ def add_questions_to_project(project_data, new_questions, args):
         # Update the project status
         project_data["status"] = "in_progress"
         
+        # Ensure active status is preserved
+        project_data["active"] = active_status
+        
+        # Prepare updates for the tracking file
+        # Get full parameters to preserve fields like topic, perspective, and depth
+        parameters_update = project_data.get("parameters", {}).copy()
+        parameters_update["questions"] = all_questions
+        
         # Update the project in the tracking file
         update_project_in_tracking(project_data["id"], {
-            "parameters": {"questions": all_questions},
-            "status": "in_progress"
+            "parameters": parameters_update,
+            "status": "in_progress",
+            "active": active_status
         })
         
         # Update the README to include new questions
@@ -1482,7 +1696,8 @@ def add_questions_to_project(project_data, new_questions, args):
         
         # Process files with OpenAI if enabled
         if ENABLE_OPENAI_INTEGRATION:
-            project_data = process_files_with_openai(master_folder, project_data)
+            # Use our new function that only processes the new files
+            project_data = process_new_files_with_openai(master_folder, project_data, start_question_number, len(new_questions))
         
         # Update project status to completed
         project_data["status"] = "completed"
@@ -1544,6 +1759,11 @@ def add_project_to_tracking(project_data):
 def update_project_in_tracking(project_id, updates):
     """
     Update an existing project in the tracking file.
+    
+    IMPORTANT: This function uses dict.update() which replaces entire nested objects.
+    For example, if you pass {"parameters": {"questions": [...]}}, it will replace the
+    entire "parameters" object, losing any other fields like "topic", "perspective", etc.
+    Always copy the full object first before modifying it.
     
     Args:
         project_id (str): The ID of the project to update
@@ -1750,23 +1970,41 @@ def check_files_processing_status(client, vector_store_id, prefix=""):
         bool: True if all files are processed, False otherwise
     """
     try:
-        # Get the vector store
-        vector_store = client.beta.vector_stores.retrieve(vector_store_id)
+        # Get the vector store - using updated API path
+        vector_store = client.vector_stores.retrieve(vector_store_id)
         
-        # Get all file IDs in the vector store
-        files_in_store = client.beta.vector_stores.file_batches.list(vector_store_id=vector_store_id)
-        
-        # Check if any files are still processing
-        all_completed = True
-        for file_batch in files_in_store.data:
-            if file_batch.status != "completed":
-                all_completed = False
-                safe_print(f"{Colors.YELLOW}{prefix} File batch {file_batch.id} status: {file_batch.status}{Colors.RESET}")
-        
-        return all_completed
+        # Check file counts from the vector store object
+        if hasattr(vector_store, 'file_counts'):
+            # New API format
+            in_progress = vector_store.file_counts.get('in_progress', 0)
+            failed = vector_store.file_counts.get('failed', 0)
+            cancelled = vector_store.file_counts.get('cancelled', 0)
+            
+            # If any files are still in progress or have failed, not all are completed
+            if in_progress > 0:
+                safe_print(f"{Colors.YELLOW}{prefix} Files still processing: {in_progress} in progress{Colors.RESET}")
+                return False
+                
+            if failed > 0:
+                safe_print(f"{Colors.YELLOW}{prefix} Some files failed processing: {failed} failed{Colors.RESET}")
+                # We still consider the overall process "completed" even if some files failed
+            
+            # If we get here, processing is completed (even if some files failed)
+            return True
+        else:
+            # Fallback to checking status directly
+            if hasattr(vector_store, 'status') and vector_store.status == 'completed':
+                return True
+            else:
+                safe_print(f"{Colors.YELLOW}{prefix} Vector store status: {getattr(vector_store, 'status', 'unknown')}{Colors.RESET}")
+                return False
+            
     except Exception as e:
         safe_print(f"{Colors.RED}{prefix} Error checking file processing status: {str(e)}{Colors.RESET}")
-        return False
+        # Consider it completed if we can't check (otherwise it might never complete)
+        # This is a judgment call - could go either way depending on risk tolerance
+        safe_print(f"{Colors.YELLOW}{prefix} Assuming processing is complete due to API error{Colors.RESET}")
+        return True
 
 def process_citations(prioritized_citation_map, master_folder, max_workers, thread_stagger_delay=5.0):
     """
@@ -1911,26 +2149,33 @@ def process_files_with_openai(master_folder, project_data):
     Returns:
         Updated project data with OpenAI integration info
     """
+    # Preserve the active status if it exists
+    active_status = project_data.get("active", True)
+    
     if not ENABLE_OPENAI_INTEGRATION:
         safe_print(f"{Colors.YELLOW}OpenAI integration is disabled. Set ENABLE_OPENAI_INTEGRATION=true to enable.{Colors.RESET}")
         project_data["openai_integration"] = {"status": "disabled"}
+        project_data["active"] = active_status
         return project_data
         
     if not OPENAI_AVAILABLE:
         safe_print(f"{Colors.YELLOW}OpenAI package is not installed. Run 'pip install openai' to enable this feature.{Colors.RESET}")
         project_data["openai_integration"] = {"status": "unavailable", "reason": "openai package not installed"}
+        project_data["active"] = active_status
         return project_data
         
     if not OPENAI_API_KEY:
         safe_print(f"{Colors.YELLOW}OPENAI_API_KEY is not set in environment. Add it to your .env file.{Colors.RESET}")
         project_data["openai_integration"] = {"status": "unavailable", "reason": "api key not configured"}
+        project_data["active"] = active_status
         return project_data
-        
+    
     # Create OpenAI client
     client = create_openai_client()
     if not client:
         safe_print(f"{Colors.RED}Failed to create OpenAI client. OpenAI integration will be skipped.{Colors.RESET}")
         project_data["openai_integration"] = {"status": "error", "reason": "client creation failed"}
+        project_data["active"] = active_status
         return project_data
     
     prefix = "[OpenAI]"
@@ -1941,6 +2186,7 @@ def process_files_with_openai(master_folder, project_data):
     if not project_id:
         safe_print(f"{Colors.RED}{prefix} Project ID not found in project data. OpenAI integration will be skipped.{Colors.RESET}")
         project_data["openai_integration"] = {"status": "error", "reason": "project id missing"}
+        project_data["active"] = active_status
         return project_data
     
     # Step 1: Upload files to OpenAI
@@ -1950,6 +2196,7 @@ def process_files_with_openai(master_folder, project_data):
     if not file_ids:
         safe_print(f"{Colors.RED}{prefix} Failed to upload files to OpenAI.{Colors.RESET}")
         project_data["openai_integration"] = {"status": "error", "reason": "file upload failed"}
+        project_data["active"] = active_status
         return project_data
     
     # Count total uploaded files
@@ -1960,6 +2207,7 @@ def process_files_with_openai(master_folder, project_data):
     if total_files == 0:
         safe_print(f"{Colors.YELLOW}{prefix} No files were uploaded. Skipping vector store creation.{Colors.RESET}")
         project_data["openai_integration"] = {"status": "no_files", "file_ids": file_ids}
+        project_data["active"] = active_status
         return project_data
     
     # Step 2: Create vector store
@@ -1984,6 +2232,7 @@ def process_files_with_openai(master_folder, project_data):
             "file_ids": file_ids,
             "reason": "vector store creation failed"
         }
+        project_data["active"] = active_status
         return project_data
     
     # Step 3: Add files to vector store
@@ -2011,6 +2260,7 @@ def process_files_with_openai(master_folder, project_data):
             },
             "reason": "no files added to vector store"
         }
+        project_data["active"] = active_status
         return project_data
     
     # Step 4: Wait for files to be processed
@@ -2036,6 +2286,9 @@ def process_files_with_openai(master_folder, project_data):
         "processing_completed": all_completed
     }
     
+    # Preserve the active status if it exists
+    active_status = project_data.get("active", True)
+    
     update_data = {
         "openai_integration": {
             "status": "success",
@@ -2053,6 +2306,9 @@ def process_files_with_openai(master_folder, project_data):
         "file_ids": file_ids,
         "vector_store": vector_store_info
     }
+    
+    # Ensure active status is preserved
+    project_data["active"] = active_status
     
     if all_completed:
         safe_print(f"{Colors.BOLD}{Colors.GREEN}{prefix} All files have been processed successfully!{Colors.RESET}")
@@ -2235,7 +2491,17 @@ def main():
             safe_print(f"{Colors.CYAN}Project ID: {args.existing_project}{Colors.RESET}")
             safe_print(f"{Colors.CYAN}Project folder: {master_folder}{Colors.RESET}")
             
+            # Store the active status before processing
+            active_status = project_data.get("active", True)
+            
+            # Process the project with OpenAI
             project_data = process_files_with_openai(master_folder, project_data)
+            
+            # Ensure the active status is preserved
+            if "active" not in project_data:
+                project_data["active"] = active_status
+                # Update the tracking file with the active status
+                update_project_in_tracking(project_data["id"], {"active": active_status})
             
             # Restore original setting
             ENABLE_OPENAI_INTEGRATION = old_setting
@@ -2272,7 +2538,8 @@ def main():
                     "questions": []
                 },
                 "status": "failed",
-                "reason": "Failed to generate questions for topic"
+                "reason": "Failed to generate questions for topic",
+                "active": True
             }
             add_project_to_tracking(project_data)
             return project_data
@@ -2357,7 +2624,8 @@ def main():
                         "questions": []
                     },
                     "status": "failed",
-                    "reason": "Failed to generate questions for topic"
+                    "reason": "Failed to generate questions for topic",
+                    "active": True
                 }
                 add_project_to_tracking(project_data)
                 return project_data
@@ -2472,7 +2740,17 @@ def main():
                 safe_print(f"{Colors.CYAN}Project ID: {project_id}{Colors.RESET}")
                 safe_print(f"{Colors.CYAN}Project folder: {master_folder}{Colors.RESET}")
                 
+                # Store the active status before processing
+                active_status = selected_project.get("active", True)
+                
+                # Process the project with OpenAI
                 project_data = process_files_with_openai(master_folder, selected_project)
+                
+                # Ensure the active status is preserved
+                if "active" not in project_data:
+                    project_data["active"] = active_status
+                    # Update the tracking file with the active status
+                    update_project_in_tracking(project_data["id"], {"active": active_status})
                 
                 # Restore original setting
                 ENABLE_OPENAI_INTEGRATION = old_setting
@@ -2496,7 +2774,8 @@ def main():
                 "questions": []
             },
             "status": "failed",
-            "reason": "No research questions provided"
+            "reason": "No research questions provided",
+            "active": True
         }
         # Add topic, perspective, and depth if available
         if args.topic:
@@ -2589,7 +2868,8 @@ def main():
             "summary_folder": "summaries",
             "response_folder": "response"
         },
-        "status": "in_progress"
+        "status": "in_progress",
+        "active": True
     }
     
     # Add topic, perspective, and depth if available

@@ -58,6 +58,7 @@ header[data-testid="stHeader"] {
     padding: 8px !important;
     border-radius: 8px;
     animation: fadeIn 0.3s ease-in-out;
+    color: #000000;
 }
 
 /* User message styling */
@@ -65,6 +66,7 @@ header[data-testid="stHeader"] {
     background-color: rgba(73, 119, 236, 0.1);
     border-left: 3px solid rgba(73, 119, 236, 0.7);
     margin-left: 20% !important; /* Shift user messages to the right */
+    color: #000000;
 }
 
 /* Assistant message styling */
@@ -72,18 +74,20 @@ header[data-testid="stHeader"] {
     background-color: rgba(240, 242, 246, 0.8);
     border-left: 3px solid rgba(110, 110, 130, 0.4);
     margin-right: 20% !important; /* Shift assistant messages to the left */
+    color: #000000;
 }
 
 /* Make chat bubble text more compact */
 [data-testid="stMarkdown"] p {
     margin-bottom: 0.3rem !important;
     line-height: 1.4 !important;
+    color: #000000;
 }
 
 /* Citations styling - more compact */
 .citation {
     font-size: 0.8em;
-    color: #555;
+    color: #000000;
     padding: 6px;
     border-radius: 6px;
     margin-top: 5px;
@@ -95,6 +99,7 @@ header[data-testid="stHeader"] {
 .web-citation {
     background-color: rgba(73, 119, 236, 0.05);
     border-left: 2px solid rgba(73, 119, 236, 0.5);
+    color: #000000;
 }
 
 .web-citation .citation-source a {
@@ -109,10 +114,11 @@ header[data-testid="stHeader"] {
 .citation-header {
     font-weight: bold;
     margin-bottom: 2px; /* Reduced margin */
+    color: #000000;
 }
 
 .citation-source {
-    color: #777;
+    color: #000000;
     font-style: italic;
     margin-top: 2px; /* Reduced margin */
 }
@@ -190,10 +196,23 @@ header[data-testid="stHeader"] {
     background-color: white !important;
     margin-top: 5px !important;
     padding: 0 !important;
+    color: #000000 !important;
 }
 
 [data-testid="stChatInput"] > div {
     padding: 6px 12px !important;
+    color: #000000 !important;
+}
+
+/* Explicitly style the input textarea */
+[data-testid="stChatInput"] textarea {
+    color: #000000 !important;
+}
+
+/* Ensure the placeholder text is also visible but distinct */
+[data-testid="stChatInput"] textarea::placeholder {
+    color: #888888 !important;
+    opacity: 0.8 !important;
 }
 
 /* Settings panel styling */
@@ -213,6 +232,7 @@ header[data-testid="stHeader"] {
     margin-bottom: 8px;
     background-color: white;
     transition: all 0.2s ease;
+    color: #000000;
 }
 
 .project-card:hover {
@@ -229,16 +249,18 @@ header[data-testid="stHeader"] {
 .project-card-title {
     font-weight: bold;
     margin-bottom: 3px;
+    color: #000000;
 }
 
 .project-card-info {
     display: flex;
     font-size: 0.8em;
-    color: #555;
+    color: #000000;
 }
 
 .project-card-info div {
     margin-right: 12px;
+    color: #000000;
 }
 
 /* Model selector styling - more compact */
@@ -255,6 +277,8 @@ header[data-testid="stHeader"] {
     padding: 8px;
     cursor: pointer;
     transition: all 0.2s ease;
+    background-color: white;
+    color: #000000;
 }
 
 .model-option:hover {
@@ -268,6 +292,7 @@ header[data-testid="stHeader"] {
 
 .model-name {
     font-weight: 500;
+    color: #000000;
 }
 
 .model-description {
@@ -406,4 +431,20 @@ div.row-widget.stRadio > div[role="radiogroup"] > label {
 /* Spinner customization for loading states */
 .stSpinner > div > div {
     border-color: rgb(73, 119, 236) transparent transparent !important;
+}
+
+/* Ensure all input fields have visible text */
+input, textarea, [contenteditable="true"] {
+    color: #000000 !important;
+}
+
+/* Additional styling for Streamlit chat components */
+.stChatInputContainer, 
+.stChatInputContainer > *, 
+div[data-testid="stChatInput"] > *,
+div[data-testid="stChatInput"] div,
+div[data-testid="stChatInput"] span,
+div[data-testid="stChatInput"] input,
+div[data-testid="stChatInput"] textarea {
+    color: #000000 !important;
 } 
