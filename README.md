@@ -141,9 +141,11 @@ The Streamlit app provides a user-friendly interface to interact with research p
 ### Running the App
 
 ```bash
-cd streamlit_app
-streamlit run app.py
+# IMPORTANT: Always run from the project root directory
+streamlit run streamlit_app/app.py
 ```
+
+> **Warning**: Do not change directory to `streamlit_app` before running the app. Running the app from any directory other than the project root will cause import failures and functionality issues.
 
 ### Features
 
