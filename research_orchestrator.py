@@ -1183,13 +1183,33 @@ def generate_research_questions(topic, perspective, depth):
     
     # Construct the prompt for Perplexity
     prompt = f"""
-I'm going to be doing deep research on {topic}. From the perspective of a {perspective}. 
-Give me {depth} interesting research questions to dive into. 
+I'm going to be doing deep research on {topic} from the perspective of a {perspective}.
+Give me {depth} comprehensive research questions to dive into.
 
-Embed each question in [[[<question>]]] and just show the {depth} questions with no other text. 
-Start from the most general questions ("What is {topic}?") to increasingly specific questions that are relevant based on the perspective of a {perspective}. 
-Good research on a company, as an example, would focus on competitors as well the industry and other key factors. It might also ask specificquestions about each module of the software. Research on other topics should be similarly thorough.
-First think deeply and mentally mind map this project deeply across all facets then begin.
+IMPORTANT: Each question MUST be self-contained and include all necessary context about {topic}.
+This is critical because each question will be processed independently without knowledge of the other questions.
+
+For example, instead of "What are the major competitors?", use "What are the major competitors in the {topic} industry?" or "Who are the main competitors of {topic} and how do they compare?"
+
+MIND-MAPPING APPROACH: Think of this as creating a detailed mind map of {topic}. Each question should represent a specific node in this mind map:
+1. Start by creating 1-2 questions covering the central node (the core nature of {topic})
+2. Then branch out to major conceptual nodes (key aspects, dimensions, or categories of {topic})
+3. For each major node, create questions that explore specific sub-nodes (detailed aspects of each key dimension)
+4. Ensure your questions collectively cover the entire mind map structure to a balanced depth
+
+Embed each question in [[[<question>]]] and just show the {depth} questions with no other text.
+
+Structure the questions to ensure systematic coverage:
+1. Start with foundational questions that define and contextualize {topic}
+2. Then explore distinct "branches" of knowledge about {topic} that would be particularly relevant for a {perspective}
+3. Ensure questions examine the topic from multiple perspectives (historical, current state, implementation, challenges, outlook)
+4. Make sure no major "node" of the topic remains unexplored
+
+For general company research, include questions on competitors, industry positioning, product offerings, business model, and market trends.
+For technology research, cover capabilities, limitations, implementation, comparisons to alternatives, and future developments.
+For general topics, ensure a comprehensive coverage from fundamental concepts to specialized applications and future directions.
+
+Make every question stand perfectly on its own while collectively building a complete map of knowledge about {topic}.
 """
     
     # Query Perplexity for questions
@@ -1199,7 +1219,7 @@ First think deeply and mentally mind map this project deeply across all facets t
             query_perplexity,
             prompt=prompt,
             model=PERPLEXITY_RESEARCH_MODEL,
-            system_prompt="You are a professional research question generator. Create insightful and specific questions.",
+            system_prompt="You are a professional research question generator. Create insightful, specific, and self-contained questions that include all necessary context to be answered independently of each other.",
             is_research=False,  # We don't need the long timeout for this
             prefix="[Question Generation]"
         )
